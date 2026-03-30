@@ -16,6 +16,10 @@
   box-sizing: border-box;
 }
 
+.is-hidden {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -313,12 +317,87 @@ body.sidebar-collapsed .sidebar-toggle-btn svg {
   display: none;
 }
 
+.query-builder-card,
 .terminal-panel {
   margin-bottom: 12px;
   border: 1px solid #d7c7b2;
   border-radius: 12px;
   background: linear-gradient(180deg, #fff8ee 0%, #f8ecde 100%);
   overflow: hidden;
+  position: relative;
+}
+
+.query-builder-card {
+  padding: 44px 10px 10px;
+}
+
+.query-corner-host {
+  position: static;
+  z-index: 30;
+  display: inline-flex;
+}
+
+#builderCornerHost {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+}
+
+#terminalCornerHost {
+  margin: 0;
+}
+
+.query-corner-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.corner-select {
+  min-width: 112px;
+  border-radius: 9px;
+  padding: 3px;
+}
+
+.corner-select .theme-select-btn {
+  padding: 4px 5px 4px 8px;
+}
+
+.corner-select .theme-select-btn-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.corner-select .theme-select-toggle {
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+
+.corner-select .theme-select-menu {
+  min-width: 120px;
+}
+
+.corner-select .theme-select-option {
+  font-size: 0.82rem;
+  padding: 7px 9px;
+}
+
+.corner-export-btn {
+  height: 30px;
+  border: 1px solid #d9c5ad;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #fff9f0 0%, #f4e6d3 100%);
+  color: #5f4a36;
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 0 10px;
+}
+
+.corner-export-btn:hover {
+  filter: none;
+  background: linear-gradient(180deg, #fff4e7 0%, #efdcc5 100%);
 }
 
 .terminal-head {
@@ -329,6 +408,30 @@ body.sidebar-collapsed .sidebar-toggle-btn svg {
   padding: 8px 10px;
   border-bottom: 1px solid #dccbb7;
   background: #f2e5d6;
+}
+
+.terminal-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: end;
+}
+
+#terminalCornerHost .query-corner-controls {
+  gap: 6px;
+}
+
+#terminalCornerHost .corner-select {
+  min-width: 106px;
+}
+
+#terminalCornerHost .corner-export-btn {
+  height: 28px;
+}
+
+#terminalCornerHost .theme-select-menu {
+  left: auto;
+  right: 0;
 }
 
 .terminal-tab {
@@ -572,33 +675,14 @@ body.sidebar-collapsed .sidebar-toggle-btn svg {
   border-radius: 12px;
   background: linear-gradient(180deg, #fff8ef 0%, #fcf3e7 100%);
   padding: 10px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  align-items: end;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
 }
 
 .query-primary-actions {
   display: flex;
   align-items: center;
-}
-
-.query-secondary-controls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: end;
-}
-
-.query-control {
-  display: grid;
-  gap: 5px;
-}
-
-.query-control span {
-  font-size: 0.78rem;
-  letter-spacing: 0.03em;
-  color: #6f5c49;
 }
 
 .theme-select {
@@ -689,10 +773,6 @@ body.sidebar-collapsed .sidebar-toggle-btn svg {
 .theme-select-option:hover,
 .theme-select-option.active {
   background: #f1e2cf;
-}
-
-.query-export-btn {
-  white-space: nowrap;
 }
 
 label {
@@ -1040,25 +1120,49 @@ button.danger {
     flex: 1;
   }
 
+  .query-builder-card {
+    padding-top: 12px;
+  }
+
+  #builderCornerHost {
+    position: static;
+    margin: 8px 10px 0;
+  }
+
+  #terminalCornerHost {
+    margin: 0;
+  }
+
+  .query-corner-controls {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .corner-select {
+    min-width: 104px;
+    flex: 1;
+  }
+
+  .corner-export-btn {
+    min-width: 72px;
+  }
+
   .terminal-head {
-    grid-template-columns: 1fr auto;
-    grid-template-areas:
-      "tab clear"
-      "context context";
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 8px;
   }
 
-  .terminal-tab {
-    grid-area: tab;
-    justify-self: start;
+  .terminal-head-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
   }
 
-  .terminal-clear-btn {
-    grid-area: clear;
-    justify-self: end;
-  }
-
-  .terminal-context {
-    grid-area: context;
+  #terminalCornerHost .query-corner-controls {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .terminal-input-row {
@@ -1071,12 +1175,7 @@ button.danger {
   }
 
   .query-toolbar {
-    grid-template-columns: 1fr;
-    align-items: stretch;
-  }
-
-  .query-secondary-controls {
-    grid-template-columns: 1fr;
+    justify-content: flex-start;
   }
 
   .main-topbar {

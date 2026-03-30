@@ -403,7 +403,33 @@ function updateOperationTabbarVisibility() {
     return;
   }
   const activeTab = document.querySelector(".tab.active")?.dataset.tab || "query";
-  bar.hidden = activeTab === "query" && state.queryInputMode === "terminal";
+  const shouldHide = activeTab === "query" && state.queryInputMode === "terminal";
+  bar.hidden = false;
+  bar.classList.toggle("is-hidden", shouldHide);
+}
+
+function mountQueryCornerControls(mode = state.queryInputMode) {
+  const controls = $("queryCornerControls");
+  if (!controls) {
+    return;
+  }
+
+  const activeTab = document.querySelector(".tab.active")?.dataset.tab || "query";
+  const shouldShow = activeTab === "query";
+  controls.hidden = false;
+  controls.classList.toggle("is-hidden", !shouldShow);
+  if (!shouldShow) {
+    return;
+  }
+
+  const host = mode === "terminal" ? $("terminalCornerHost") : $("builderCornerHost");
+  if (!host) {
+    return;
+  }
+
+  if (controls.parentElement !== host) {
+    host.appendChild(controls);
+  }
 }
 
 function applyQueryInputMode(mode, { persist = true } = {}) {
@@ -432,6 +458,8 @@ function applyQueryInputMode(mode, { persist = true } = {}) {
     terminalBtn.classList.toggle("active", nextMode === "terminal");
   }
 
+  closeAllQuerySelects();
+  mountQueryCornerControls(nextMode);
   updateOperationTabbarVisibility();
 
   if (persist) {
@@ -585,9 +613,11 @@ function setActiveTab(target) {
 
   const modeSwitcher = $("queryModeSwitcher");
   if (modeSwitcher) {
-    modeSwitcher.hidden = target !== "query";
+    modeSwitcher.hidden = false;
+    modeSwitcher.classList.toggle("is-hidden", target !== "query");
   }
 
+  mountQueryCornerControls(state.queryInputMode);
   updateOperationTabbarVisibility();
 }
 
@@ -796,7 +826,11 @@ function setQuerySelectValue(type, value, { emitChange = true } = {}) {
   }
 
   refs.input.value = value;
-  refs.button.querySelector(".theme-select-btn-label").textContent = matched.textContent.trim();
+  const prefix = refs.button.dataset.prefix?.trim();
+  const baseLabel = matched.textContent.trim();
+  refs.button.querySelector(".theme-select-btn-label").textContent = prefix
+    ? `${prefix} · ${baseLabel}`
+    : baseLabel;
   refs.options.forEach((option) => {
     option.classList.toggle("active", option.dataset.value === value);
   });
