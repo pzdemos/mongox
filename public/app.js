@@ -1,3 +1,5 @@
+const API_BASE = "/mongo";
+
 const $ = (id) => document.getElementById(id);
 
 const state = {
@@ -867,7 +869,7 @@ function bindQuerySelect(type, onChange) {
 }
 
 async function refreshStatus() {
-  const data = await api("/api/status");
+  const data = await api(`${API_BASE}/api/status`);
   setStatus(data.status);
 }
 
@@ -879,7 +881,7 @@ async function refreshDatabases({ suppressError = false } = {}) {
     return { warning: null };
   }
   try {
-    const data = await api("/api/databases");
+    const data = await api(`${API_BASE}/api/databases`);
     setComboOptions(
       "db",
       data.databases.map((d) => d.name),
@@ -906,7 +908,7 @@ async function refreshCollections({ suppressError = false } = {}) {
     return { warning: null };
   }
   try {
-    const data = await api("/api/collections");
+    const data = await api(`${API_BASE}/api/collections`);
     setComboOptions("collection", data.collections, "输入或选择集合");
     if (!collectionInput.value && state.status?.collectionName) {
       collectionInput.value = state.status.collectionName;
@@ -1019,7 +1021,7 @@ function readQueryPayload() {
 
 async function connectUsingCurrentInput() {
   const uri = $("uriInput").value.trim();
-  const data = await api("/api/connect", {
+  const data = await api(`${API_BASE}/api/connect`, {
     method: "POST",
     body: JSON.stringify({ uri }),
   });
@@ -1061,7 +1063,7 @@ async function handleConnect(event) {
 }
 
 async function handleDisconnect() {
-  const data = await api("/api/disconnect", { method: "POST", body: "{}" });
+  const data = await api(`${API_BASE}/api/disconnect`, { method: "POST", body: "{}" });
   setStatus(data.status);
   setComboOptions("db", [], "先连接数据库");
   setComboOptions("collection", [], "先选择数据库");
@@ -1094,7 +1096,7 @@ async function handleSetDb() {
   if (!dbName) {
     throw new Error("请输入或选择数据库名");
   }
-  const data = await api("/api/database", {
+  const data = await api(`${API_BASE}/api/database`, {
     method: "POST",
     body: JSON.stringify({ dbName }),
   });
@@ -1115,7 +1117,7 @@ async function handleSetCollection() {
   if (!collectionName) {
     throw new Error("请输入或选择集合名");
   }
-  const data = await api("/api/collection", {
+  const data = await api(`${API_BASE}/api/collection`, {
     method: "POST",
     body: JSON.stringify({ collectionName }),
   });
@@ -1127,7 +1129,7 @@ async function handleSetCollection() {
 
 async function handleQuery() {
   const payload = readQueryPayload();
-  const data = await api("/api/query", {
+  const data = await api(`${API_BASE}/api/query`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -1138,7 +1140,7 @@ async function handleQuery() {
 
 async function handleInsert() {
   const doc = $("insertDoc").value.trim();
-  const data = await api("/api/insert", {
+  const data = await api(`${API_BASE}/api/insert`, {
     method: "POST",
     body: JSON.stringify({ doc }),
   });
@@ -1146,7 +1148,7 @@ async function handleInsert() {
 }
 
 async function handleUpdate() {
-  const data = await api("/api/update", {
+  const data = await api(`${API_BASE}/api/update`, {
     method: "POST",
     body: JSON.stringify({
       filter: $("updateFilter").value.trim(),
@@ -1163,7 +1165,7 @@ async function handleDelete() {
   if (!accepted) {
     return;
   }
-  const data = await api("/api/delete", {
+  const data = await api(`${API_BASE}/api/delete`, {
     method: "POST",
     body: JSON.stringify({
       filter: $("deleteFilter").value.trim(),
@@ -1174,7 +1176,7 @@ async function handleDelete() {
 }
 
 async function handleStats() {
-  const data = await api("/api/stats");
+  const data = await api(`${API_BASE}/api/stats`);
   $("statsOutput").textContent = formatJson(data.stats);
   showToast("统计已刷新");
 }
@@ -1185,7 +1187,7 @@ async function handleExport() {
     format: $("exportFormat").value,
   };
 
-  const response = await fetch("/api/export", {
+  const response = await fetch(`${API_BASE}/api/export`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -1230,7 +1232,7 @@ async function executeTerminalCommand() {
 
   setTerminalRunning(true);
   try {
-    const data = await api("/api/command", {
+    const data = await api(`${API_BASE}/api/command`, {
       method: "POST",
       body: JSON.stringify({ command }),
     });
