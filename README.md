@@ -30,7 +30,7 @@ npm start
 
 启动后访问：
 
-[http://localhost:3000](http://localhost:3000)
+[http://localhost:5000](http://localhost:5000)
 
 ## 可选脚本
 
