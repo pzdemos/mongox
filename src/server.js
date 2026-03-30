@@ -13,6 +13,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "..", "public")));
+const API_PREFIX = "/mongo/api";
+const apiPath = (pathName) => `${API_PREFIX}${pathName}`;
 
 const state = {
   client: null,
@@ -621,12 +623,12 @@ function normalizeErrorMessage(error) {
   return raw;
 }
 
-app.get("/api/health", (_req, res) => {
+app.get(apiPath("/health"), (_req, res) => {
   res.json({ ok: true, status: getStatus() });
 });
 
 app.post(
-  "/api/connect",
+  apiPath("/connect"),
   asyncHandler(async (req, res) => {
     const uri = String(req.body?.uri || "").trim();
     if (!uri) {
@@ -651,7 +653,7 @@ app.post(
 );
 
 app.post(
-  "/api/disconnect",
+  apiPath("/disconnect"),
   asyncHandler(async (_req, res) => {
     await closeCurrentClient();
     state.uri = "";
@@ -661,12 +663,12 @@ app.post(
   }),
 );
 
-app.get("/api/status", (_req, res) => {
+app.get(apiPath("/status"), (_req, res) => {
   res.json({ ok: true, status: getStatus() });
 });
 
 app.get(
-  "/api/databases",
+  apiPath("/databases"),
   asyncHandler(async (_req, res) => {
     assertConnected();
     try {
@@ -687,7 +689,7 @@ app.get(
 );
 
 app.post(
-  "/api/database",
+  apiPath("/database"),
   asyncHandler(async (req, res) => {
     assertConnected();
     const dbName = String(req.body?.dbName || "").trim();
@@ -717,7 +719,7 @@ app.post(
 );
 
 app.get(
-  "/api/collections",
+  apiPath("/collections"),
   asyncHandler(async (_req, res) => {
     assertDbSelected();
     let collections = [];
@@ -736,7 +738,7 @@ app.get(
   }),
 );
 
-app.post("/api/collection", (req, res) => {
+app.post(apiPath("/collection"), (req, res) => {
   assertDbSelected();
   const collectionName = String(req.body?.collectionName || "").trim();
   if (!collectionName) {
@@ -747,7 +749,7 @@ app.post("/api/collection", (req, res) => {
 });
 
 app.post(
-  "/api/command",
+  apiPath("/command"),
   asyncHandler(async (req, res) => {
     const command = String(req.body?.command || "").trim();
     if (!command) {
@@ -765,7 +767,7 @@ app.post(
 );
 
 app.post(
-  "/api/query",
+  apiPath("/query"),
   asyncHandler(async (req, res) => {
     const collection = getCollection();
     const filter = parseEjsonInput(req.body?.filter, {});
@@ -790,7 +792,7 @@ app.post(
 );
 
 app.post(
-  "/api/insert",
+  apiPath("/insert"),
   asyncHandler(async (req, res) => {
     const collection = getCollection();
     const doc = parseEjsonInput(req.body?.doc);
@@ -806,7 +808,7 @@ app.post(
 );
 
 app.post(
-  "/api/update",
+  apiPath("/update"),
   asyncHandler(async (req, res) => {
     const collection = getCollection();
     const filter = parseEjsonInput(req.body?.filter, {});
@@ -836,7 +838,7 @@ app.post(
 );
 
 app.post(
-  "/api/delete",
+  apiPath("/delete"),
   asyncHandler(async (req, res) => {
     const collection = getCollection();
     const filter = parseEjsonInput(req.body?.filter, {});
@@ -849,7 +851,7 @@ app.post(
 );
 
 app.get(
-  "/api/stats",
+  apiPath("/stats"),
   asyncHandler(async (_req, res) => {
     const collection = getCollection();
     const [estimatedCount, accurateCount, indexes] = await Promise.all([
@@ -882,7 +884,7 @@ app.get(
 );
 
 app.post(
-  "/api/export",
+  apiPath("/export"),
   asyncHandler(async (req, res) => {
     const collection = getCollection();
     const filter = parseEjsonInput(req.body?.filter, {});
