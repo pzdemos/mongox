@@ -20,12 +20,12 @@
     "node": ">=18"
   },
   "dependencies": {
-    "bson": "^6.9.0",
+    "bson": "^4.7.2",
     "chalk": "^5.3.0",
     "cli-table3": "^0.6.5",
+    "express": "^4.21.2",
     "inquirer": "^9.3.7",
     "js-yaml": "^4.1.0",
-    "express": "^4.21.2",
-    "mongodb": "^6.20.0"
+    "mongodb": "^4.17.2"
   }
 }

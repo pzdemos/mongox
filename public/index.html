@@ -10,16 +10,30 @@
     <div class="bg-shape shape-a"></div>
     <div class="bg-shape shape-b"></div>
 
-    <header class="topbar">
-      <div>
-        <h1>MongoDB Admin Web</h1>
-        <p>本地/远程连接、CRUD、查询多视图、结果多格式导出</p>
-      </div>
-      <div id="statusChip" class="status-chip">未连接</div>
-    </header>
-
     <main class="layout">
-      <aside class="panel side-panel">
+      <aside class="panel side-panel" id="sidePanel">
+        <div class="sidebar-toolbar">
+          <div class="sidebar-brand" aria-label="应用标题">Mongo Atelier</div>
+          <button
+            id="sidebarToggleBtn"
+            type="button"
+            class="icon-toggle-btn sidebar-toggle-btn"
+            aria-label="折叠侧边栏"
+            title="折叠侧边栏"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M15 18l-6-6 6-6"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          </button>
+        </div>
+        <div class="side-panel-content">
         <section class="block">
           <div class="block-title-row">
             <h2>连接</h2>
@@ -155,10 +169,28 @@
           <h2>状态</h2>
           <pre id="statusText" class="code"></pre>
         </section>
+        </div>
       </aside>
 
       <section class="panel main-panel">
-        <div class="tabbar">
+        <div class="main-topbar">
+          <div id="queryModeSwitcher" class="query-input-switch">
+            <button
+              id="queryBuilderModeBtn"
+              type="button"
+              class="query-mode-btn active"
+              data-mode="builder"
+            >
+              条件模式
+            </button>
+            <button id="queryTerminalModeBtn" type="button" class="query-mode-btn" data-mode="terminal">
+              命令模式
+            </button>
+          </div>
+          <div id="statusChip" class="status-chip">未连接</div>
+        </div>
+
+        <div class="tabbar operation-tabbar">
           <button class="tab active" data-tab="query">查询</button>
           <button class="tab" data-tab="insert">新增</button>
           <button class="tab" data-tab="update">更新</button>
@@ -167,6 +199,30 @@
         </div>
 
         <section id="tab-query" class="tab-content active">
+          <section id="queryTerminalPanel" class="terminal-panel" hidden>
+            <div class="terminal-head">
+              <div class="terminal-tab">mongosh</div>
+              <div id="terminalContext" class="terminal-context">未连接</div>
+              <button id="terminalClearBtn" type="button" class="terminal-clear-btn">清空</button>
+            </div>
+            <div id="terminalOutput" class="terminal-output">
+              <div class="terminal-entry terminal-entry-hint">
+                输入命令执行 CRUD，例如: db.getCollection('users').find({})
+              </div>
+            </div>
+            <div class="terminal-input-row">
+              <span id="terminalPrompt" class="terminal-prompt">db.(collection)&gt;</span>
+              <input
+                id="terminalInput"
+                type="text"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="db.getCollection('temp').find({})"
+              />
+              <button id="terminalRunBtn" type="button">执行</button>
+            </div>
+          </section>
+          <div id="queryBuilderPanel">
           <div class="grid-2">
             <label>
               Filter (JSON/EJSON)
@@ -187,20 +243,71 @@
               <input id="queryLimit" type="number" min="1" max="500" value="20" />
             </label>
           </div>
-          <div class="row">
-            <button id="runQueryBtn" type="button">执行查询</button>
-            <select id="viewMode">
-              <option value="table">表格视图</option>
-              <option value="json">JSON 视图</option>
-              <option value="cards">卡片视图</option>
-            </select>
-            <select id="exportFormat">
-              <option value="json">导出 JSON</option>
-              <option value="yaml">导出 YAML</option>
-              <option value="csv">导出 CSV</option>
-              <option value="ndjson">导出 NDJSON</option>
-            </select>
-            <button id="exportBtn" type="button" class="ghost">导出当前查询</button>
+          <div class="query-toolbar">
+            <div class="query-primary-actions">
+              <button id="runQueryBtn" type="button">执行查询</button>
+            </div>
+            <div class="query-secondary-controls">
+              <label class="query-control">
+                <span>视图</span>
+                <div id="viewModePicker" class="theme-select">
+                  <button
+                    id="viewModeBtn"
+                    type="button"
+                    class="theme-select-btn"
+                    aria-expanded="false"
+                    aria-haspopup="listbox"
+                  >
+                    <span class="theme-select-btn-label">表格视图</span>
+                    <span class="theme-select-toggle" aria-hidden="true">▾</span>
+                  </button>
+                  <div id="viewModeMenu" class="theme-select-menu" role="listbox" hidden>
+                    <button type="button" class="theme-select-option active" data-value="table">
+                      表格视图
+                    </button>
+                    <button type="button" class="theme-select-option" data-value="json">
+                      JSON 视图
+                    </button>
+                    <button type="button" class="theme-select-option" data-value="cards">
+                      卡片视图
+                    </button>
+                  </div>
+                  <input id="viewMode" type="hidden" value="table" />
+                </div>
+              </label>
+              <label class="query-control">
+                <span>导出格式</span>
+                <div id="exportFormatPicker" class="theme-select">
+                  <button
+                    id="exportFormatBtn"
+                    type="button"
+                    class="theme-select-btn"
+                    aria-expanded="false"
+                    aria-haspopup="listbox"
+                  >
+                    <span class="theme-select-btn-label">导出 JSON</span>
+                    <span class="theme-select-toggle" aria-hidden="true">▾</span>
+                  </button>
+                  <div id="exportFormatMenu" class="theme-select-menu" role="listbox" hidden>
+                    <button type="button" class="theme-select-option active" data-value="json">
+                      导出 JSON
+                    </button>
+                    <button type="button" class="theme-select-option" data-value="yaml">
+                      导出 YAML
+                    </button>
+                    <button type="button" class="theme-select-option" data-value="csv">
+                      导出 CSV
+                    </button>
+                    <button type="button" class="theme-select-option" data-value="ndjson">
+                      导出 NDJSON
+                    </button>
+                  </div>
+                  <input id="exportFormat" type="hidden" value="json" />
+                </div>
+              </label>
+              <button id="exportBtn" type="button" class="ghost query-export-btn">导出结果</button>
+            </div>
+          </div>
           </div>
           <div id="resultsMeta" class="meta"></div>
           <div id="resultsContainer" class="results"></div>

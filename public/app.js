@@ -3,12 +3,27 @@ const $ = (id) => document.getElementById(id);
 const state = {
   status: null,
   docs: [],
+  connecting: false,
+  queryInputMode: "builder",
+  terminal: {
+    running: false,
+    history: [],
+    historyIndex: -1,
+  },
 };
 
 const comboState = {
   db: { options: [], filtered: [], open: false, highlighted: -1 },
   collection: { options: [], filtered: [], open: false, highlighted: -1 },
 };
+
+const querySelectState = {
+  viewMode: { open: false },
+  exportFormat: { open: false },
+};
+
+const SIDEBAR_COLLAPSE_STORAGE_KEY = "mongodb_admin_sidebar_collapsed";
+const QUERY_INPUT_MODE_STORAGE_KEY = "mongodb_admin_query_input_mode";
 
 function showToast(message, isError = false) {
   const toast = $("toast");
@@ -18,16 +33,215 @@ function showToast(message, isError = false) {
   setTimeout(() => toast.classList.remove("show"), 2600);
 }
 
+function isDesktopViewport() {
+  return window.matchMedia("(min-width: 1061px)").matches;
+}
+
+function getSavedSidebarCollapsed() {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveSidebarCollapsed(collapsed) {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSE_STORAGE_KEY, collapsed ? "1" : "0");
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function updateSidebarToggleButton(isCollapsed, isDesktop = true) {
+  const button = $("sidebarToggleBtn");
+  if (!button) {
+    return;
+  }
+
+  if (!isDesktop) {
+    button.setAttribute("aria-label", "折叠侧边栏（仅 PC）");
+    button.title = "折叠侧边栏（仅 PC）";
+    return;
+  }
+
+  const label = isCollapsed ? "展开侧边栏" : "折叠侧边栏";
+  button.setAttribute("aria-label", label);
+  button.title = label;
+}
+
+function applySidebarCollapsed(collapsed, { persist = true } = {}) {
+  const desktop = isDesktopViewport();
+  const applied = desktop && Boolean(collapsed);
+  document.body.classList.toggle("sidebar-collapsed", applied);
+  updateSidebarToggleButton(applied, desktop);
+
+  if (persist) {
+    saveSidebarCollapsed(Boolean(collapsed));
+  }
+}
+
+function initSidebarCollapseState() {
+  applySidebarCollapsed(getSavedSidebarCollapsed(), { persist: false });
+  window.addEventListener("resize", () => {
+    applySidebarCollapsed(getSavedSidebarCollapsed(), { persist: false });
+  });
+}
+
 function formatJson(value) {
   return JSON.stringify(value, null, 2);
 }
 
+function parseEjsonDate(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || !("$date" in value)) {
+    return null;
+  }
+
+  const raw = value.$date;
+  if (typeof raw === "string" || typeof raw === "number") {
+    const date = new Date(raw);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  if (
+    raw &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    typeof raw.$numberLong === "string"
+  ) {
+    const date = new Date(Number(raw.$numberLong));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  return null;
+}
+
+function formatDateForDisplay(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const h = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  const sec = String(date.getSeconds()).padStart(2, "0");
+  return `${y}-${m}-${d} ${h}:${min}:${sec}`;
+}
+
+function toDisplayValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => toDisplayValue(item));
+  }
+
+  const asDate = parseEjsonDate(value);
+  if (asDate) {
+    return formatDateForDisplay(asDate);
+  }
+
+  if (value && typeof value === "object") {
+    const output = {};
+    Object.entries(value).forEach(([key, inner]) => {
+      output[key] = toDisplayValue(inner);
+    });
+    return output;
+  }
+
+  return value;
+}
+
+function stringifyValue(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  return JSON.stringify(value);
+}
+
 function compact(value, max = 80) {
-  const raw = typeof value === "string" ? value : JSON.stringify(value);
+  const raw = stringifyValue(value);
   if (!raw) {
     return "";
   }
   return raw.length > max ? `${raw.slice(0, max)}...` : raw;
+}
+
+function readIdValue(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    typeof value.$oid === "string"
+  ) {
+    return value.$oid;
+  }
+  return stringifyValue(value);
+}
+
+function shortIdValue(value, size = 18) {
+  if (value.length <= size) {
+    return value;
+  }
+  const keep = Math.max(6, Math.floor((size - 3) / 2));
+  return `${value.slice(0, keep)}...${value.slice(-keep)}`;
+}
+
+async function copyText(text) {
+  if (!text) {
+    return false;
+  }
+
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "absolute";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return copied;
+  }
+}
+
+function createIdFoldElement(idValue) {
+  const fullId = readIdValue(idValue);
+  if (!fullId) {
+    return null;
+  }
+
+  const details = document.createElement("details");
+  details.className = "id-fold";
+
+  const summary = document.createElement("summary");
+  summary.className = "id-summary";
+  summary.title = "点击可复制 _id";
+
+  const short = document.createElement("span");
+  short.className = "id-short";
+  short.textContent = fullId.slice(-5);
+
+  summary.appendChild(short);
+  summary.addEventListener("click", async () => {
+    const copied = await copyText(fullId);
+    showToast(copied ? "_id 已复制" : "复制失败", !copied);
+  });
+
+  const full = document.createElement("pre");
+  full.className = "id-full";
+  full.textContent = fullId;
+
+  details.appendChild(summary);
+  details.appendChild(full);
+  return details;
 }
 
 async function api(url, options = {}) {
@@ -54,14 +268,30 @@ async function api(url, options = {}) {
 function setStatus(status) {
   state.status = status;
 
+  renderStatusChip(status);
+  renderTerminalContext();
+  $("statusText").textContent = formatJson(status);
+  updateConnectToggle(status);
+}
+
+function renderStatusChip(status) {
   const chip = $("statusChip");
+  if (!chip) {
+    return;
+  }
+
+  if (state.connecting) {
+    chip.textContent = "连接中...";
+    chip.classList.remove("connected");
+    chip.classList.add("connecting");
+    return;
+  }
+
+  chip.classList.remove("connecting");
   chip.textContent = status.connected
     ? `已连接: ${status.dbName || "(未选库)"} / ${status.collectionName || "(未选集合)"}`
     : "未连接";
   chip.classList.toggle("connected", status.connected);
-
-  $("statusText").textContent = formatJson(status);
-  updateConnectToggle(status);
 }
 
 function connectToggleIconPath(isConnected) {
@@ -86,8 +316,39 @@ function updateConnectToggle(status) {
     return;
   }
 
+  if (state.connecting) {
+    button.disabled = true;
+    button.classList.remove("is-connected");
+    button.classList.add("is-connecting");
+    button.setAttribute("aria-label", "连接中");
+    button.title = "连接中";
+    button.innerHTML = `
+      <svg class="spin" viewBox="0 0 24 24" aria-hidden="true">
+        <circle
+          cx="12"
+          cy="12"
+          r="8"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          opacity="0.28"
+        />
+        <path
+          d="M20 12a8 8 0 0 0-8-8"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+        />
+      </svg>
+    `;
+    return;
+  }
+
   const isConnected = Boolean(status?.connected);
   const icon = connectToggleIconPath(isConnected);
+  button.disabled = false;
+  button.classList.remove("is-connecting");
   button.classList.toggle("is-connected", isConnected);
   button.setAttribute("aria-label", isConnected ? "断开连接" : "连接数据库");
   button.title = isConnected ? "断开连接" : "连接数据库";
@@ -111,6 +372,256 @@ function updateConnectToggle(status) {
       />
     </svg>
   `;
+}
+
+function setConnecting(connecting) {
+  state.connecting = Boolean(connecting);
+  renderStatusChip(state.status || { connected: false, dbName: "", collectionName: "" });
+  updateConnectToggle(state.status);
+}
+
+function getSavedQueryInputMode() {
+  try {
+    const value = localStorage.getItem(QUERY_INPUT_MODE_STORAGE_KEY);
+    return value === "terminal" ? "terminal" : "builder";
+  } catch {
+    return "builder";
+  }
+}
+
+function saveQueryInputMode(mode) {
+  try {
+    localStorage.setItem(QUERY_INPUT_MODE_STORAGE_KEY, mode);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function updateOperationTabbarVisibility() {
+  const bar = document.querySelector(".operation-tabbar");
+  if (!bar) {
+    return;
+  }
+  const activeTab = document.querySelector(".tab.active")?.dataset.tab || "query";
+  bar.hidden = activeTab === "query" && state.queryInputMode === "terminal";
+}
+
+function applyQueryInputMode(mode, { persist = true } = {}) {
+  const nextMode = mode === "terminal" ? "terminal" : "builder";
+  state.queryInputMode = nextMode;
+
+  const queryTab = $("tab-query");
+  const builderPanel = $("queryBuilderPanel");
+  const terminalPanel = $("queryTerminalPanel");
+  const builderBtn = $("queryBuilderModeBtn");
+  const terminalBtn = $("queryTerminalModeBtn");
+
+  if (queryTab) {
+    queryTab.dataset.inputMode = nextMode;
+  }
+  if (builderPanel) {
+    builderPanel.hidden = nextMode !== "builder";
+  }
+  if (terminalPanel) {
+    terminalPanel.hidden = nextMode !== "terminal";
+  }
+  if (builderBtn) {
+    builderBtn.classList.toggle("active", nextMode === "builder");
+  }
+  if (terminalBtn) {
+    terminalBtn.classList.toggle("active", nextMode === "terminal");
+  }
+
+  updateOperationTabbarVisibility();
+
+  if (persist) {
+    saveQueryInputMode(nextMode);
+  }
+}
+
+function terminalHostFromUri(uri) {
+  if (!uri) {
+    return "localhost:27017";
+  }
+  try {
+    const parsed = new URL(uri);
+    return parsed.host || "localhost:27017";
+  } catch {
+    return uri.replace(/^mongodb(\+srv)?:\/\//, "").split("/")[0] || "unknown";
+  }
+}
+
+function renderTerminalContext() {
+  const context = $("terminalContext");
+  const prompt = $("terminalPrompt");
+  if (!context || !prompt) {
+    return;
+  }
+
+  const status = state.status || {};
+  if (!status.connected) {
+    context.textContent = "未连接";
+    prompt.textContent = "db.(collection)>";
+    return;
+  }
+
+  const host = terminalHostFromUri(status.uri);
+  const dbName = status.dbName || "(未选库)";
+  const collectionName = status.collectionName || "(未选集合)";
+  context.textContent = `${host}  ·  ${dbName}  ·  ${collectionName}`;
+  prompt.textContent = `${dbName}.${collectionName}>`;
+}
+
+function trimTerminalPayload(text, maxLength = 30000) {
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength)}\n...（内容过长，已截断）`;
+}
+
+function appendTerminalEntry(type, message, payload = null) {
+  const output = $("terminalOutput");
+  if (!output) {
+    return;
+  }
+
+  const entry = document.createElement("div");
+  entry.className = `terminal-entry terminal-entry-${type}`;
+  entry.textContent = message;
+
+  if (payload !== null && payload !== undefined) {
+    const pre = document.createElement("pre");
+    pre.textContent = trimTerminalPayload(
+      formatJson(toDisplayValue(payload)),
+      30000,
+    );
+    entry.appendChild(pre);
+  }
+
+  output.appendChild(entry);
+  output.scrollTop = output.scrollHeight;
+}
+
+function clearTerminalOutput() {
+  const output = $("terminalOutput");
+  if (!output) {
+    return;
+  }
+  output.innerHTML = "";
+}
+
+function setTerminalRunning(running) {
+  state.terminal.running = Boolean(running);
+  const runButton = $("terminalRunBtn");
+  const input = $("terminalInput");
+  if (!runButton || !input) {
+    return;
+  }
+
+  runButton.disabled = state.terminal.running;
+  runButton.textContent = state.terminal.running ? "执行中..." : "执行";
+  input.disabled = state.terminal.running;
+}
+
+function pushTerminalHistory(command) {
+  if (!command) {
+    return;
+  }
+  const list = state.terminal.history;
+  if (list[list.length - 1] !== command) {
+    list.push(command);
+  }
+  state.terminal.historyIndex = list.length;
+}
+
+function terminalResultSummary(data) {
+  const elapsed = `${data.elapsedMs ?? 0}ms`;
+  switch (data.resultType) {
+    case "find":
+      return `find => ${data.count} 条 (${elapsed})`;
+    case "findOne":
+      return `findOne => ${data.found ? "找到 1 条" : "未找到"} (${elapsed})`;
+    case "countDocuments":
+      return `countDocuments => ${data.count} (${elapsed})`;
+    case "insertOne":
+      return `insertOne => insertedId: ${JSON.stringify(data.insertedId)} (${elapsed})`;
+    case "insertMany":
+      return `insertMany => ${data.insertedCount} 条 (${elapsed})`;
+    case "updateOne":
+    case "updateMany":
+      return `${data.resultType} => matched ${data.matchedCount}, modified ${data.modifiedCount} (${elapsed})`;
+    case "deleteOne":
+    case "deleteMany":
+      return `${data.resultType} => deleted ${data.deletedCount} (${elapsed})`;
+    default:
+      return `执行完成 (${elapsed})`;
+  }
+}
+
+function normalizeCommandResultForBottom(data) {
+  return {
+    resultType: data.resultType,
+    elapsedMs: data.elapsedMs,
+    count: data.count,
+    found: data.found,
+    insertedId: data.insertedId,
+    insertedCount: data.insertedCount,
+    insertedIds: data.insertedIds,
+    matchedCount: data.matchedCount,
+    modifiedCount: data.modifiedCount,
+    upsertedCount: data.upsertedCount,
+    deletedCount: data.deletedCount,
+  };
+}
+
+function setActiveTab(target) {
+  const tabs = [...document.querySelectorAll(".tab")];
+  tabs.forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.tab === target);
+  });
+  document.querySelectorAll(".tab-content").forEach((section) => {
+    section.classList.toggle("active", section.id === `tab-${target}`);
+  });
+
+  const modeSwitcher = $("queryModeSwitcher");
+  if (modeSwitcher) {
+    modeSwitcher.hidden = target !== "query";
+  }
+
+  updateOperationTabbarVisibility();
+}
+
+function activateTab(target) {
+  setActiveTab(target);
+}
+
+function renderBottomCommandResult(title, payload) {
+  activateTab("query");
+  const meta = $("resultsMeta");
+  const container = $("resultsContainer");
+  if (!meta || !container) {
+    return;
+  }
+
+  meta.textContent = title;
+  container.innerHTML = "";
+
+  const pre = document.createElement("pre");
+  pre.className = "result-json";
+  pre.textContent = formatJson(toDisplayValue(payload));
+  container.appendChild(pre);
+}
+
+function syncUiByStatus(status) {
+  if (!status) {
+    return;
+  }
+  if (status.dbName) {
+    $("dbComboInput").value = status.dbName;
+  }
+  if (status.collectionName) {
+    $("collectionComboInput").value = status.collectionName;
+  }
 }
 
 function getComboRefs(type) {
@@ -235,6 +746,92 @@ function setComboOptions(type, values, placeholder) {
   renderComboMenu(type, refs.input.value);
 }
 
+function getQuerySelectRefs(type) {
+  if (type === "viewMode") {
+    return {
+      root: $("viewModePicker"),
+      input: $("viewMode"),
+      button: $("viewModeBtn"),
+      menu: $("viewModeMenu"),
+      options: [...$("viewModeMenu").querySelectorAll(".theme-select-option")],
+    };
+  }
+
+  return {
+    root: $("exportFormatPicker"),
+    input: $("exportFormat"),
+    button: $("exportFormatBtn"),
+    menu: $("exportFormatMenu"),
+    options: [...$("exportFormatMenu").querySelectorAll(".theme-select-option")],
+  };
+}
+
+function closeQuerySelect(type) {
+  const refs = getQuerySelectRefs(type);
+  querySelectState[type].open = false;
+  refs.menu.hidden = true;
+  refs.button.setAttribute("aria-expanded", "false");
+}
+
+function closeAllQuerySelects(exceptType = null) {
+  ["viewMode", "exportFormat"].forEach((type) => {
+    if (type !== exceptType) {
+      closeQuerySelect(type);
+    }
+  });
+}
+
+function openQuerySelect(type) {
+  const refs = getQuerySelectRefs(type);
+  querySelectState[type].open = true;
+  refs.menu.hidden = false;
+  refs.button.setAttribute("aria-expanded", "true");
+}
+
+function setQuerySelectValue(type, value, { emitChange = true } = {}) {
+  const refs = getQuerySelectRefs(type);
+  const matched = refs.options.find((item) => item.dataset.value === value);
+  if (!matched) {
+    return;
+  }
+
+  refs.input.value = value;
+  refs.button.querySelector(".theme-select-btn-label").textContent = matched.textContent.trim();
+  refs.options.forEach((option) => {
+    option.classList.toggle("active", option.dataset.value === value);
+  });
+
+  if (emitChange) {
+    refs.input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+}
+
+function bindQuerySelect(type, onChange) {
+  const refs = getQuerySelectRefs(type);
+
+  refs.button.addEventListener("click", () => {
+    if (querySelectState[type].open) {
+      closeQuerySelect(type);
+      return;
+    }
+    closeAllQuerySelects(type);
+    openQuerySelect(type);
+  });
+
+  refs.options.forEach((option) => {
+    option.addEventListener("click", () => {
+      const value = option.dataset.value;
+      setQuerySelectValue(type, value);
+      closeQuerySelect(type);
+      if (typeof onChange === "function") {
+        onChange(value);
+      }
+    });
+  });
+
+  setQuerySelectValue(type, refs.input.value, { emitChange: false });
+}
+
 async function refreshStatus() {
   const data = await api("/api/status");
   setStatus(data.status);
@@ -293,6 +890,7 @@ async function refreshCollections({ suppressError = false } = {}) {
 function renderResults() {
   const container = $("resultsContainer");
   const docs = state.docs;
+  const displayDocs = docs.map((doc) => toDisplayValue(doc));
   const mode = $("viewMode").value;
   const meta = $("resultsMeta");
   meta.textContent = `结果条数: ${docs.length}`;
@@ -306,7 +904,7 @@ function renderResults() {
   if (mode === "json") {
     const pre = document.createElement("pre");
     pre.className = "result-json";
-    pre.textContent = formatJson(docs);
+    pre.textContent = formatJson(displayDocs);
     container.appendChild(pre);
     return;
   }
@@ -317,10 +915,16 @@ function renderResults() {
     docs.forEach((doc, index) => {
       const card = document.createElement("article");
       card.className = "doc-card";
-      card.innerHTML = `
-        <h3>Document #${index + 1}</h3>
-        <pre>${formatJson(doc)}</pre>
-      `;
+      const title = document.createElement("h3");
+      title.textContent = `Document #${index + 1}`;
+      const idFold = createIdFoldElement(doc?._id);
+      const pre = document.createElement("pre");
+      pre.textContent = formatJson(displayDocs[index]);
+      card.appendChild(title);
+      if (idFold) {
+        card.appendChild(idFold);
+      }
+      card.appendChild(pre);
       grid.appendChild(card);
     });
     container.appendChild(grid);
@@ -350,11 +954,18 @@ function renderResults() {
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
-  docs.forEach((doc) => {
+  docs.forEach((doc, index) => {
     const tr = document.createElement("tr");
     keys.forEach((k) => {
       const td = document.createElement("td");
-      td.textContent = compact(doc[k], 120);
+      if (k === "_id") {
+        const idFold = createIdFoldElement(doc[k]);
+        if (idFold) {
+          td.appendChild(idFold);
+        }
+      } else {
+        td.textContent = compact(displayDocs[index]?.[k], 120);
+      }
       tr.appendChild(td);
     });
     tbody.appendChild(tr);
@@ -379,12 +990,23 @@ async function connectUsingCurrentInput() {
     body: JSON.stringify({ uri }),
   });
   setStatus(data.status);
+  if (data.status?.uri) {
+    $("uriInput").value = data.status.uri;
+  }
   const dbResult = await refreshDatabases({ suppressError: true });
   const collectionResult = await refreshCollections({ suppressError: true });
 
+  const notices = [];
+  if (data.adapted && data.adaptationReason) {
+    notices.push(`已自动适配参数（${data.adaptationReason}）`);
+  }
   const warnings = [dbResult.warning, collectionResult.warning].filter(Boolean);
   if (warnings.length) {
-    showToast(`连接成功，但部分列表不可见：${warnings[0]}`);
+    notices.push(`部分列表不可见：${warnings[0]}`);
+  }
+
+  if (notices.length) {
+    showToast(`连接成功，${notices.join("；")}`);
     return;
   }
 
@@ -393,7 +1015,15 @@ async function connectUsingCurrentInput() {
 
 async function handleConnect(event) {
   event.preventDefault();
-  await connectUsingCurrentInput();
+  if (state.connecting) {
+    return;
+  }
+  setConnecting(true);
+  try {
+    await connectUsingCurrentInput();
+  } finally {
+    setConnecting(false);
+  }
 }
 
 async function handleDisconnect() {
@@ -414,7 +1044,15 @@ async function handleConnectToggle() {
     await handleDisconnect();
     return;
   }
-  await connectUsingCurrentInput();
+  if (state.connecting) {
+    return;
+  }
+  setConnecting(true);
+  try {
+    await connectUsingCurrentInput();
+  } finally {
+    setConnecting(false);
+  }
 }
 
 async function handleSetDb() {
@@ -545,16 +1183,60 @@ async function handleExport() {
   showToast(`导出成功: ${fileName}`);
 }
 
+async function executeTerminalCommand() {
+  const input = $("terminalInput");
+  const command = input.value.trim();
+  if (!command || state.terminal.running) {
+    return;
+  }
+
+  appendTerminalEntry("cmd", `> ${command}`);
+  pushTerminalHistory(command);
+  input.value = "";
+
+  setTerminalRunning(true);
+  try {
+    const data = await api("/api/command", {
+      method: "POST",
+      body: JSON.stringify({ command }),
+    });
+
+    if (data.status) {
+      setStatus(data.status);
+      syncUiByStatus(data.status);
+      await refreshCollections({ suppressError: true });
+    }
+
+    if (data.resultType === "find") {
+      state.docs = data.docs || [];
+      renderResults();
+    } else if (data.resultType === "findOne") {
+      state.docs = data.doc ? [data.doc] : [];
+      renderResults();
+    } else {
+      renderBottomCommandResult(
+        terminalResultSummary(data),
+        normalizeCommandResultForBottom(data),
+      );
+    }
+
+    const summary = terminalResultSummary(data);
+    showToast(summary);
+  } catch (error) {
+    renderBottomCommandResult("命令执行失败", { command, error: error.message });
+    showToast(error.message, true);
+  } finally {
+    setTerminalRunning(false);
+    input.focus();
+  }
+}
+
 function setupTabs() {
   const tabs = [...document.querySelectorAll(".tab")];
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
-      tabs.forEach((item) => item.classList.remove("active"));
-      tab.classList.add("active");
       const target = tab.dataset.tab;
-      document.querySelectorAll(".tab-content").forEach((section) => {
-        section.classList.toggle("active", section.id === `tab-${target}`);
-      });
+      setActiveTab(target);
     });
   });
 }
@@ -564,6 +1246,13 @@ function bindEvents() {
   const runSetCollection = wrap(handleSetCollection);
 
   $("connectForm").addEventListener("submit", wrap(handleConnect));
+  $("sidebarToggleBtn").addEventListener("click", () => {
+    if (!isDesktopViewport()) {
+      return;
+    }
+    const next = !document.body.classList.contains("sidebar-collapsed");
+    applySidebarCollapsed(next);
+  });
   $("connectToggleBtn").addEventListener("click", wrap(handleConnectToggle));
   $("refreshDbBtn").addEventListener("click", wrap(refreshDatabases));
   $("refreshCollectionBtn").addEventListener("click", wrap(refreshCollections));
@@ -663,15 +1352,32 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const dbField = $("dbComboInput").closest(".combo-field");
     const collectionField = $("collectionComboInput").closest(".combo-field");
+    const viewSelectRoot = $("viewModePicker");
+    const exportSelectRoot = $("exportFormatPicker");
     if (!dbField.contains(event.target)) {
       closeCombo("db");
     }
     if (!collectionField.contains(event.target)) {
       closeCombo("collection");
     }
+    if (!viewSelectRoot.contains(event.target)) {
+      closeQuerySelect("viewMode");
+    }
+    if (!exportSelectRoot.contains(event.target)) {
+      closeQuerySelect("exportFormat");
+    }
   });
 
   $("runQueryBtn").addEventListener("click", wrap(handleQuery));
+  bindQuerySelect("viewMode");
+  bindQuerySelect("exportFormat");
+  $("queryBuilderModeBtn").addEventListener("click", () => {
+    applyQueryInputMode("builder");
+  });
+  $("queryTerminalModeBtn").addEventListener("click", () => {
+    applyQueryInputMode("terminal");
+    $("terminalInput").focus();
+  });
   $("viewMode").addEventListener("change", renderResults);
   $("exportBtn").addEventListener("click", wrap(handleExport));
 
@@ -679,6 +1385,50 @@ function bindEvents() {
   $("updateBtn").addEventListener("click", wrap(handleUpdate));
   $("deleteBtn").addEventListener("click", wrap(handleDelete));
   $("statsBtn").addEventListener("click", wrap(handleStats));
+
+  $("terminalRunBtn").addEventListener("click", () => {
+    void executeTerminalCommand();
+  });
+  $("terminalClearBtn").addEventListener("click", () => {
+    clearTerminalOutput();
+  });
+  $("terminalInput").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void executeTerminalCommand();
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      const history = state.terminal.history;
+      if (!history.length) {
+        return;
+      }
+      event.preventDefault();
+      if (state.terminal.historyIndex > 0) {
+        state.terminal.historyIndex -= 1;
+      } else {
+        state.terminal.historyIndex = 0;
+      }
+      $("terminalInput").value = history[state.terminal.historyIndex] || "";
+      return;
+    }
+
+    if (event.key === "ArrowDown") {
+      const history = state.terminal.history;
+      if (!history.length) {
+        return;
+      }
+      event.preventDefault();
+      if (state.terminal.historyIndex < history.length - 1) {
+        state.terminal.historyIndex += 1;
+        $("terminalInput").value = history[state.terminal.historyIndex] || "";
+      } else {
+        state.terminal.historyIndex = history.length;
+        $("terminalInput").value = "";
+      }
+    }
+  });
 }
 
 function wrap(fn) {
@@ -694,7 +1444,13 @@ function wrap(fn) {
 
 async function init() {
   setupTabs();
+  const activeTab = document.querySelector(".tab.active")?.dataset.tab || "query";
+  setActiveTab(activeTab);
+  initSidebarCollapseState();
   bindEvents();
+  applyQueryInputMode(getSavedQueryInputMode(), { persist: false });
+  renderTerminalContext();
+  setTerminalRunning(false);
   await refreshStatus();
   await refreshDatabases({ suppressError: true });
   await refreshCollections({ suppressError: true });
