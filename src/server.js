@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import yaml from "js-yaml";
+import JSON5 from "json5";
 import { EJSON } from "bson";
 import { MongoClient } from "mongodb";
 
@@ -45,7 +46,17 @@ function parseEjsonInput(input, fallback = undefined) {
     throw new Error("参数必须是 JSON/EJSON 字符串或对象");
   }
 
-  return EJSON.parse(input.trim());
+  const text = input.trim();
+  try {
+    return EJSON.parse(text);
+  } catch (error) {
+    try {
+      const looseParsed = JSON5.parse(text);
+      return EJSON.deserialize(looseParsed);
+    } catch {
+      throw error;
+    }
+  }
 }
 
 function assertConnected() {
@@ -401,6 +412,59 @@ function parseCollectionLiteral(raw) {
   return parsed.trim();
 }
 
+function parseMethodChain(operationSegment) {
+  const segment = String(operationSegment || "").trim();
+  if (!segment) {
+    throw new Error("命令格式错误，请使用 method(...) 形式");
+  }
+
+  const methods = [];
+  let index = 0;
+  const consumeSpaces = () => {
+    while (index < segment.length && /\s/.test(segment[index])) {
+      index += 1;
+    }
+  };
+
+  while (index < segment.length) {
+    consumeSpaces();
+    const nameMatch = segment.slice(index).match(/^([A-Za-z][A-Za-z0-9]*)/);
+    if (!nameMatch) {
+      throw new Error("命令格式错误，请使用 method(...) 形式");
+    }
+
+    const name = nameMatch[1];
+    index += name.length;
+    consumeSpaces();
+
+    if (segment[index] !== "(") {
+      throw new Error(`方法 ${name} 缺少参数括号`);
+    }
+
+    const openIndex = index;
+    const closeIndex = findMatchingParen(segment, openIndex);
+    if (closeIndex < 0) {
+      throw new Error(`方法 ${name} 参数括号未闭合`);
+    }
+
+    const argsRaw = segment.slice(openIndex + 1, closeIndex);
+    methods.push({ name, args: splitTopLevelArgs(argsRaw) });
+    index = closeIndex + 1;
+    consumeSpaces();
+
+    if (index >= segment.length) {
+      break;
+    }
+
+    if (segment[index] !== ".") {
+      throw new Error("命令格式错误，请使用 method(...).next(...) 形式");
+    }
+    index += 1;
+  }
+
+  return methods;
+}
+
 function parseTerminalCommand(command, fallbackCollectionName = "") {
   const source = String(command || "").trim().replace(/;+\s*$/, "");
   if (!source) {
@@ -441,14 +505,15 @@ function parseTerminalCommand(command, fallbackCollectionName = "") {
     throw new Error("请先选择集合，或在命令中指定集合");
   }
 
-  const opMatch = operationSegment.match(/^([A-Za-z][A-Za-z0-9]*)\(([\s\S]*)\)$/);
-  if (!opMatch) {
-    throw new Error("命令格式错误，请使用 method(...) 形式");
-  }
-
-  const operation = opMatch[1];
-  const args = splitTopLevelArgs(opMatch[2]);
-  return { collectionName, operation, args, source };
+  const methods = parseMethodChain(operationSegment);
+  const [firstCall, ...chain] = methods;
+  return {
+    collectionName,
+    operation: firstCall.name,
+    args: firstCall.args,
+    chain,
+    source,
+  };
 }
 
 function assertPlainObject(value, fieldName) {
@@ -466,6 +531,14 @@ function parseLimit(value, fallback = 50, max = 500) {
   return Math.min(Math.max(raw, 1), max);
 }
 
+function parseSkip(value, fallback = 0, max = 100000) {
+  const raw = Number(value);
+  if (!Number.isInteger(raw) || raw < 0) {
+    return fallback;
+  }
+  return Math.min(raw, max);
+}
+
 async function runTerminalCommand(commandText) {
   assertDbSelected();
   const parsed = parseTerminalCommand(commandText, state.collectionName);
@@ -475,6 +548,7 @@ async function runTerminalCommand(commandText) {
   const startedAt = Date.now();
   const op = parsed.operation;
   const args = parsed.args;
+  const chain = parsed.chain || [];
 
   if (op === "find") {
     const filter = assertPlainObject(parseEjsonInput(args[0], {}), "filter");
@@ -497,12 +571,53 @@ async function runTerminalCommand(commandText) {
     if (options?.sort) {
       cursor.sort(assertPlainObject(options.sort, "options.sort"));
     }
-    const limit = parseLimit(options?.limit, 50, 500);
+    let limit = parseLimit(options?.limit, 50, 500);
+    let skip = parseSkip(options?.skip, 0, 100000);
+
+    for (const call of chain) {
+      const method = call.name;
+      const callArgs = call.args || [];
+
+      if (method === "sort") {
+        const sort = assertPlainObject(parseEjsonInput(callArgs[0], {}), "sort");
+        cursor.sort(sort);
+        continue;
+      }
+
+      if (method === "project") {
+        const project = assertPlainObject(parseEjsonInput(callArgs[0], {}), "projection");
+        cursor.project(project);
+        continue;
+      }
+
+      if (method === "limit") {
+        const limitValue = parseEjsonInput(callArgs[0], limit);
+        limit = parseLimit(limitValue, limit, 500);
+        continue;
+      }
+
+      if (method === "skip") {
+        const skipValue = parseEjsonInput(callArgs[0], skip);
+        skip = parseSkip(skipValue, skip, 100000);
+        continue;
+      }
+
+      if (method === "toArray") {
+        continue;
+      }
+
+      throw new Error("find 链式调用仅支持 sort/project/limit/skip/toArray");
+    }
+
+    if (skip > 0) {
+      cursor.skip(skip);
+    }
     const docs = await cursor.limit(limit).toArray();
     return {
       resultType: "find",
       count: docs.length,
       limit,
+      skip,
       docs: toTransport(docs),
       elapsedMs: Date.now() - startedAt,
     };

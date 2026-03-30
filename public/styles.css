@@ -26,6 +26,7 @@ body {
   font-family: "Space Grotesk", "IBM Plex Sans", "Avenir Next", sans-serif;
   color: var(--text);
   background: radial-gradient(circle at 12% 8%, #fff8ef 0%, var(--bg) 55%);
+  overflow-x: hidden;
 }
 
 .bg-shape {
@@ -905,13 +906,16 @@ button.danger {
   background: #fffdf8;
   min-height: 220px;
   max-height: 520px;
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: auto;
   padding: 10px;
 }
 
 .result-json {
   margin: 0;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-size: 0.84rem;
   font-family: "IBM Plex Mono", "Menlo", monospace;
 }
@@ -919,6 +923,7 @@ button.danger {
 .result-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .result-table th,
@@ -928,6 +933,8 @@ button.danger {
   text-align: left;
   vertical-align: top;
   font-size: 0.84rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .result-table th {
@@ -1023,6 +1030,8 @@ button.danger {
   margin: 8px 0 0;
   font-size: 0.8rem;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-family: "IBM Plex Mono", "Menlo", monospace;
 }
 
@@ -1080,21 +1089,46 @@ button.danger {
 
 @media (max-width: 1060px) {
   .layout {
+    width: min(1380px, calc(100vw - 18px));
+    margin: 12px auto 16px;
     grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .side-panel,
+  .main-panel {
+    padding: 12px;
+  }
+
+  .block {
+    padding: 10px;
+  }
+
+  .operation-tabbar {
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .operation-tabbar .tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   body.sidebar-collapsed .layout {
     grid-template-columns: 1fr;
-    gap: 14px;
+    gap: 12px;
   }
 
   body.sidebar-collapsed .side-panel {
-    padding: 12px;
+    padding: 10px 12px;
   }
 
   body.sidebar-collapsed .sidebar-toolbar {
-    justify-content: flex-end;
-    margin-bottom: 8px;
+    justify-content: space-between;
+    margin-bottom: 0;
   }
 
   body.sidebar-collapsed .sidebar-brand {
@@ -1102,22 +1136,84 @@ button.danger {
   }
 
   body.sidebar-collapsed .side-panel-content {
-    display: flex;
+    display: none;
   }
 
   body.sidebar-collapsed .sidebar-toggle-btn svg {
-    transform: none;
+    transform: rotate(180deg);
   }
 }
 
 @media (max-width: 760px) {
+  .bg-shape {
+    opacity: 0.32;
+    filter: blur(20px);
+  }
+
+  .shape-a {
+    width: 200px;
+    height: 200px;
+    right: -36px;
+    top: 22px;
+  }
+
+  .shape-b {
+    width: 240px;
+    height: 240px;
+    left: -110px;
+    bottom: -120px;
+  }
+
+  .layout {
+    width: min(1380px, calc(100vw - 12px));
+    margin: 8px auto 12px;
+    gap: 10px;
+  }
+
+  .panel {
+    border-radius: 12px;
+  }
+
+  .side-panel,
+  .main-panel {
+    padding: 10px;
+  }
+
+  .sidebar-toolbar {
+    margin-bottom: 6px;
+  }
+
   .query-input-switch {
-    width: 100%;
+    width: auto;
+    flex: 1 1 220px;
     justify-content: space-between;
+    padding: 3px;
   }
 
   .query-mode-btn {
     flex: 1;
+    padding: 6px 10px;
+    font-size: 0.78rem;
+  }
+
+  .main-topbar {
+    flex-wrap: wrap;
+    align-items: center;
+    row-gap: 8px;
+  }
+
+  .main-topbar .query-input-switch {
+    margin-bottom: 0;
+    min-width: 0;
+  }
+
+  .main-topbar .status-chip {
+    margin-left: auto;
+  }
+
+  .status-chip {
+    padding: 6px 10px;
+    font-size: 0.8rem;
   }
 
   .query-builder-card {
@@ -1174,12 +1270,14 @@ button.danger {
     display: none;
   }
 
-  .query-toolbar {
-    justify-content: flex-start;
+  .terminal-output {
+    min-height: 108px;
+    max-height: 180px;
   }
 
-  .main-topbar {
-    flex-wrap: wrap;
+  .query-toolbar {
+    justify-content: flex-start;
+    padding: 8px;
   }
 
   .grid-2 {
@@ -1192,5 +1290,29 @@ button.danger {
 
   .combo-apply-btn {
     min-width: 0;
+    width: 100%;
+  }
+
+  .results {
+    min-height: 180px;
+    max-height: 56vh;
+    padding: 8px;
+  }
+
+  .result-table th,
+  .result-table td {
+    padding: 6px 7px;
+    font-size: 0.8rem;
+  }
+
+  .result-table th:first-child,
+  .result-table td:first-child {
+    width: 96px;
+    max-width: 96px;
+  }
+
+  .card-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
   }
 }

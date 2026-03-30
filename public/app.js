@@ -35,10 +35,6 @@ function showToast(message, isError = false) {
   setTimeout(() => toast.classList.remove("show"), 2600);
 }
 
-function isDesktopViewport() {
-  return window.matchMedia("(min-width: 1061px)").matches;
-}
-
 function getSavedSidebarCollapsed() {
   try {
     return localStorage.getItem(SIDEBAR_COLLAPSE_STORAGE_KEY) === "1";
@@ -55,15 +51,9 @@ function saveSidebarCollapsed(collapsed) {
   }
 }
 
-function updateSidebarToggleButton(isCollapsed, isDesktop = true) {
+function updateSidebarToggleButton(isCollapsed) {
   const button = $("sidebarToggleBtn");
   if (!button) {
-    return;
-  }
-
-  if (!isDesktop) {
-    button.setAttribute("aria-label", "折叠侧边栏（仅 PC）");
-    button.title = "折叠侧边栏（仅 PC）";
     return;
   }
 
@@ -73,10 +63,9 @@ function updateSidebarToggleButton(isCollapsed, isDesktop = true) {
 }
 
 function applySidebarCollapsed(collapsed, { persist = true } = {}) {
-  const desktop = isDesktopViewport();
-  const applied = desktop && Boolean(collapsed);
+  const applied = Boolean(collapsed);
   document.body.classList.toggle("sidebar-collapsed", applied);
-  updateSidebarToggleButton(applied, desktop);
+  updateSidebarToggleButton(applied);
 
   if (persist) {
     saveSidebarCollapsed(Boolean(collapsed));
@@ -1283,9 +1272,6 @@ function bindEvents() {
 
   $("connectForm").addEventListener("submit", wrap(handleConnect));
   $("sidebarToggleBtn").addEventListener("click", () => {
-    if (!isDesktopViewport()) {
-      return;
-    }
     const next = !document.body.classList.contains("sidebar-collapsed");
     applySidebarCollapsed(next);
   });
