@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MongoDB Admin Web</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg-shape shape-a"></div>
+    <div class="bg-shape shape-b"></div>
+
+    <header class="topbar">
+      <div>
+        <h1>MongoDB Admin Web</h1>
+        <p>本地/远程连接、CRUD、查询多视图、结果多格式导出</p>
+      </div>
+      <div id="statusChip" class="status-chip">未连接</div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel side-panel">
+        <section class="block">
+          <h2>连接</h2>
+          <form id="connectForm">
+            <label for="uriInput">连接字符串</label>
+            <input
+              id="uriInput"
+              type="text"
+              placeholder="mongodb://127.0.0.1:27017"
+              value="mongodb://127.0.0.1:27017"
+            />
+            <div class="row">
+              <button type="submit">连接</button>
+              <button id="disconnectBtn" type="button" class="ghost">断开</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="block">
+          <h2>数据库</h2>
+          <div class="row">
+            <select id="dbSelect"></select>
+            <button id="refreshDbBtn" type="button" class="ghost">刷新</button>
+          </div>
+          <div class="row">
+            <input id="dbInput" type="text" placeholder="手动输入数据库名" />
+            <button id="setDbBtn" type="button">设置</button>
+          </div>
+        </section>
+
+        <section class="block">
+          <h2>集合</h2>
+          <div class="row">
+            <select id="collectionSelect"></select>
+            <button id="refreshCollectionBtn" type="button" class="ghost">刷新</button>
+          </div>
+          <div class="row">
+            <input id="collectionInput" type="text" placeholder="手动输入集合名" />
+            <button id="setCollectionBtn" type="button">设置</button>
+          </div>
+        </section>
+
+        <section class="block">
+          <h2>状态</h2>
+          <pre id="statusText" class="code"></pre>
+        </section>
+      </aside>
+
+      <section class="panel main-panel">
+        <div class="tabbar">
+          <button class="tab active" data-tab="query">查询</button>
+          <button class="tab" data-tab="insert">新增</button>
+          <button class="tab" data-tab="update">更新</button>
+          <button class="tab" data-tab="delete">删除</button>
+          <button class="tab" data-tab="stats">统计</button>
+        </div>
+
+        <section id="tab-query" class="tab-content active">
+          <div class="grid-2">
+            <label>
+              Filter (JSON/EJSON)
+              <textarea id="queryFilter" rows="5">{}</textarea>
+            </label>
+            <label>
+              Projection (JSON/EJSON, 可选)
+              <textarea id="queryProjection" rows="5"></textarea>
+            </label>
+          </div>
+          <div class="grid-2">
+            <label>
+              Sort (JSON/EJSON, 可选)
+              <textarea id="querySort" rows="3"></textarea>
+            </label>
+            <label>
+              Limit
+              <input id="queryLimit" type="number" min="1" max="500" value="20" />
+            </label>
+          </div>
+          <div class="row">
+            <button id="runQueryBtn" type="button">执行查询</button>
+            <select id="viewMode">
+              <option value="table">表格视图</option>
+              <option value="json">JSON 视图</option>
+              <option value="cards">卡片视图</option>
+            </select>
+            <select id="exportFormat">
+              <option value="json">导出 JSON</option>
+              <option value="yaml">导出 YAML</option>
+              <option value="csv">导出 CSV</option>
+              <option value="ndjson">导出 NDJSON</option>
+            </select>
+            <button id="exportBtn" type="button" class="ghost">导出当前查询</button>
+          </div>
+          <div id="resultsMeta" class="meta"></div>
+          <div id="resultsContainer" class="results"></div>
+        </section>
+
+        <section id="tab-insert" class="tab-content">
+          <label>
+            Document (JSON/EJSON)
+            <textarea id="insertDoc" rows="14">{
+  "name": "demo",
+  "createdAt": {"$date":"2026-01-01T00:00:00Z"}
+}</textarea>
+          </label>
+          <div class="row">
+            <button id="insertBtn" type="button">插入文档</button>
+          </div>
+        </section>
+
+        <section id="tab-update" class="tab-content">
+          <div class="grid-2">
+            <label>
+              Filter (JSON/EJSON)
+              <textarea id="updateFilter" rows="6">{}</textarea>
+            </label>
+            <label>
+              Update (JSON/EJSON)
+              <textarea id="updateDoc" rows="6">{
+  "$set": {
+    "updatedAt": {"$date":"2026-01-01T00:00:00Z"}
+  }
+}</textarea>
+            </label>
+          </div>
+          <div class="row">
+            <label class="inline"><input id="updateMany" type="checkbox" /> updateMany</label>
+            <label class="inline"><input id="updateUpsert" type="checkbox" /> upsert</label>
+            <button id="updateBtn" type="button">执行更新</button>
+          </div>
+        </section>
+
+        <section id="tab-delete" class="tab-content">
+          <label>
+            Filter (JSON/EJSON)
+            <textarea id="deleteFilter" rows="8">{}</textarea>
+          </label>
+          <div class="row">
+            <label class="inline"><input id="deleteMany" type="checkbox" /> deleteMany</label>
+            <button id="deleteBtn" type="button" class="danger">执行删除</button>
+          </div>
+        </section>
+
+        <section id="tab-stats" class="tab-content">
+          <div class="row">
+            <button id="statsBtn" type="button">刷新统计</button>
+          </div>
+          <pre id="statsOutput" class="code"></pre>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
