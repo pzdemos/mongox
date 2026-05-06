@@ -17,55 +17,53 @@
         </div>
         <div class="side-panel-content">
         <section class="block">
-          <div class="block-title-row">
-            <h2>连接</h2>
-            <button
-              id="connectToggleBtn"
-              type="button"
-              class="icon-toggle-btn connection-toggle-btn"
-              aria-label="连接数据库"
-              title="连接数据库"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M10 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2v-3"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-                <path
-                  d="M3 12h12M9 8l4 4-4 4"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-          </div>
           <form id="connectForm" class="connect-form">
-            <label for="uriInput">连接字符串</label>
-            <input
-              id="uriInput"
-              type="text"
-              placeholder="mongodb://127.0.0.1:27017"
-              value="mongodb://127.0.0.1:27017"
-            />
+            <div class="connect-row">
+              <input
+                id="uriInput"
+                type="text"
+                placeholder="mongodb://127.0.0.1:16016"
+                value="mongodb://127.0.0.1:16016"
+              />
+              <button
+                id="connectToggleBtn"
+                type="button"
+                class="icon-toggle-btn connection-toggle-btn"
+                aria-label="连接数据库"
+                title="连接数据库"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M10 7V4a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2v-3"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                  <path
+                    d="M3 12h12M9 8l4 4-4 4"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
+            </div>
           </form>
         </section>
 
-        <section class="block">
+        <section class="block tree-block">
           <div class="block-title-row">
             <h2>数据库</h2>
             <button
               id="refreshDbBtn"
               type="button"
               class="icon-refresh-btn"
-              aria-label="刷新数据库列表"
-              title="刷新数据库列表"
+              aria-label="刷新"
+              title="刷新"
             >
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path
@@ -79,77 +77,7 @@
               </svg>
             </button>
           </div>
-          <div class="combo-picker">
-            <div class="combo-field">
-              <input
-                id="dbComboInput"
-                type="text"
-                autocomplete="off"
-                placeholder="输入或选择数据库名，例如: app_prod"
-              />
-              <button
-                id="dbComboToggleBtn"
-                type="button"
-                class="combo-toggle-btn"
-                aria-label="展开数据库选项"
-                title="展开数据库选项"
-              >
-                <span aria-hidden="true">▾</span>
-              </button>
-              <div id="dbComboMenu" class="combo-menu" role="listbox" hidden></div>
-            </div>
-            <button id="setDbBtn" type="button" class="combo-apply-btn">应用</button>
-          </div>
-        </section>
-
-        <section class="block">
-          <div class="block-title-row">
-            <h2>集合</h2>
-            <button
-              id="refreshCollectionBtn"
-              type="button"
-              class="icon-refresh-btn"
-              aria-label="刷新集合列表"
-              title="刷新集合列表"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-          </div>
-          <div class="combo-picker">
-            <div class="combo-field">
-              <input
-                id="collectionComboInput"
-                type="text"
-                autocomplete="off"
-                placeholder="输入或选择集合名，例如: users"
-              />
-              <button
-                id="collectionComboToggleBtn"
-                type="button"
-                class="combo-toggle-btn"
-                aria-label="展开集合选项"
-                title="展开集合选项"
-              >
-                <span aria-hidden="true">▾</span>
-              </button>
-              <div id="collectionComboMenu" class="combo-menu" role="listbox" hidden></div>
-            </div>
-            <button id="setCollectionBtn" type="button" class="combo-apply-btn">应用</button>
-          </div>
-        </section>
-
-        <section class="block">
-          <h2>状态</h2>
-          <pre id="statusText" class="code"></pre>
+          <div id="dbTree" class="tree-list"></div>
         </section>
         </div>
       </aside>

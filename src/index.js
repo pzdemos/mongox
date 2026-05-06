@@ -76,7 +76,7 @@ async function connectMongo() {
       type: "input",
       name: "uri",
       message: "请输入 MongoDB 连接字符串:",
-      default: state.uri || "mongodb://127.0.0.1:27017",
+      default: state.uri || "mongodb://127.0.0.1:16016",
     },
   ]);
 

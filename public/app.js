@@ -12,6 +12,11 @@ const state = {
     history: [],
     historyIndex: -1,
   },
+  tree: {
+    databases: [],
+    expandedDbs: new Set(),
+    collectionsMap: {},
+  },
 };
 
 const comboState = {
@@ -261,8 +266,132 @@ function setStatus(status) {
 
   renderStatusChip(status);
   renderTerminalContext();
-  $("statusText").textContent = formatJson(status);
   updateConnectToggle(status);
+}
+
+function renderDbTree() {
+  const container = $("dbTree");
+  if (!container) return;
+
+  container.innerHTML = "";
+  const databases = state.tree.databases;
+  const currentDb = state.status?.dbName || "";
+  const currentCol = state.status?.collectionName || "";
+
+  if (!databases.length) {
+    const empty = document.createElement("div");
+    empty.className = "tree-empty";
+    empty.textContent = state.status?.connected ? "暂无数据库" : "未连接";
+    container.appendChild(empty);
+    return;
+  }
+
+  databases.forEach((dbName) => {
+    const item = document.createElement("div");
+    item.className = "tree-item";
+
+    const dbRow = document.createElement("div");
+    dbRow.className = "tree-db" + (dbName === currentDb ? " active" : "");
+
+    const arrow = document.createElement("span");
+    arrow.className = "tree-db-arrow" + (state.tree.expandedDbs.has(dbName) ? " open" : "");
+    arrow.textContent = "\u25B8";
+
+    const name = document.createElement("span");
+    name.className = "tree-db-name";
+    name.textContent = dbName;
+
+    dbRow.appendChild(arrow);
+    dbRow.appendChild(name);
+
+    dbRow.addEventListener("click", async () => {
+      if (dbName === currentDb) {
+        if (state.tree.expandedDbs.has(dbName)) {
+          state.tree.expandedDbs.delete(dbName);
+        } else {
+          state.tree.expandedDbs.add(dbName);
+        }
+        renderDbTree();
+        return;
+      }
+
+      try {
+        const data = await api(`${API_BASE}/api/database`, {
+          method: "POST",
+          body: JSON.stringify({ dbName }),
+        });
+        setStatus(data.status);
+        state.tree.expandedDbs.add(dbName);
+        state.tree.collectionsMap[dbName] = data.collections || [];
+        renderDbTree();
+        showToast(`数据库已切换: ${dbName}`);
+      } catch (error) {
+        showToast(error.message, true);
+      }
+      await refreshStatus();
+    });
+
+    item.appendChild(dbRow);
+
+    if (state.tree.expandedDbs.has(dbName)) {
+      const colList = document.createElement("div");
+      colList.className = "tree-collections";
+      const collections = state.tree.collectionsMap[dbName] || [];
+      if (collections.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "tree-empty";
+        empty.textContent = "无集合";
+        colList.appendChild(empty);
+      } else {
+        collections.forEach((colName) => {
+          const colRow = document.createElement("div");
+          colRow.className = "tree-collection" + (dbName === currentDb && colName === currentCol ? " active" : "");
+          colRow.textContent = colName;
+          colRow.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            if (dbName !== currentDb) {
+              try {
+                const data = await api(`${API_BASE}/api/database`, {
+                  method: "POST",
+                  body: JSON.stringify({ dbName }),
+                });
+                setStatus(data.status);
+                state.tree.expandedDbs.add(dbName);
+                state.tree.collectionsMap[dbName] = data.collections || [];
+              } catch (error) {
+                showToast(error.message, true);
+                return;
+              }
+            }
+            try {
+              const data = await api(`${API_BASE}/api/collection`, {
+                method: "POST",
+                body: JSON.stringify({ collectionName: colName }),
+              });
+              setStatus(data.status);
+              renderDbTree();
+              // auto query
+              try {
+                const qData = await api(`${API_BASE}/api/query`, {
+                  method: "POST",
+                  body: JSON.stringify({ filter: "{}", limit: 20 }),
+                });
+                state.docs = qData.docs;
+                renderResults();
+              } catch { /* ignore auto-query error */ }
+            } catch (error) {
+              showToast(error.message, true);
+            }
+            await refreshStatus();
+          });
+          colList.appendChild(colRow);
+        });
+      }
+      item.appendChild(colList);
+    }
+
+    container.appendChild(item);
+  });
 }
 
 function renderStatusChip(status) {
@@ -460,11 +589,11 @@ function applyQueryInputMode(mode, { persist = true } = {}) {
 
 function terminalHostFromUri(uri) {
   if (!uri) {
-    return "localhost:27017";
+    return "localhost:16016";
   }
   try {
     const parsed = new URL(uri);
-    return parsed.host || "localhost:27017";
+    return parsed.host || "localhost:16016";
   } catch {
     return uri.replace(/^mongodb(\+srv)?:\/\//, "").split("/")[0] || "unknown";
   }
@@ -637,12 +766,7 @@ function syncUiByStatus(status) {
   if (!status) {
     return;
   }
-  if (status.dbName) {
-    $("dbComboInput").value = status.dbName;
-  }
-  if (status.collectionName) {
-    $("collectionComboInput").value = status.collectionName;
-  }
+  renderDbTree();
 }
 
 function getComboRefs(type) {
@@ -863,25 +987,23 @@ async function refreshStatus() {
 }
 
 async function refreshDatabases({ suppressError = false } = {}) {
-  const dbInput = $("dbComboInput");
   if (!state.status?.connected) {
-    setComboOptions("db", [], "先连接数据库");
-    dbInput.value = "";
+    state.tree.databases = [];
+    renderDbTree();
     return { warning: null };
   }
   try {
     const data = await api(`${API_BASE}/api/databases`);
-    setComboOptions(
-      "db",
-      data.databases.map((d) => d.name),
-      "输入或选择数据库",
-    );
-    if (!dbInput.value && state.status?.dbName) {
-      dbInput.value = state.status.dbName;
+    state.tree.databases = data.databases.map((d) => d.name);
+    // auto-expand current db
+    if (state.status?.dbName) {
+      state.tree.expandedDbs.add(state.status.dbName);
     }
+    renderDbTree();
     return { warning: data.warning || null };
   } catch (error) {
-    setComboOptions("db", [], "手动输入数据库名");
+    state.tree.databases = [];
+    renderDbTree();
     if (!suppressError) {
       throw error;
     }
@@ -890,21 +1012,17 @@ async function refreshDatabases({ suppressError = false } = {}) {
 }
 
 async function refreshCollections({ suppressError = false } = {}) {
-  const collectionInput = $("collectionComboInput");
   if (!state.status?.connected || !state.status?.dbName) {
-    setComboOptions("collection", [], "先选择数据库");
-    collectionInput.value = "";
     return { warning: null };
   }
   try {
     const data = await api(`${API_BASE}/api/collections`);
-    setComboOptions("collection", data.collections, "输入或选择集合");
-    if (!collectionInput.value && state.status?.collectionName) {
-      collectionInput.value = state.status.collectionName;
-    }
+    const dbName = state.status.dbName;
+    state.tree.collectionsMap[dbName] = data.collections;
+    state.tree.expandedDbs.add(dbName);
+    renderDbTree();
     return { warning: data.warning || null };
   } catch (error) {
-    setComboOptions("collection", [], "手动输入集合名");
     if (!suppressError) {
       throw error;
     }
@@ -1036,6 +1154,7 @@ async function connectUsingCurrentInput() {
   }
 
   showToast("连接成功");
+  renderDbTree();
 }
 
 async function handleConnect(event) {
@@ -1054,11 +1173,10 @@ async function handleConnect(event) {
 async function handleDisconnect() {
   const data = await api(`${API_BASE}/api/disconnect`, { method: "POST", body: "{}" });
   setStatus(data.status);
-  setComboOptions("db", [], "先连接数据库");
-  setComboOptions("collection", [], "先选择数据库");
-  $("dbComboInput").value = "";
-  $("collectionComboInput").value = "";
-  closeAllCombos();
+  state.tree.databases = [];
+  state.tree.collectionsMap = {};
+  state.tree.expandedDbs.clear();
+  renderDbTree();
   state.docs = [];
   renderResults();
   showToast("已断开连接");
@@ -1081,39 +1199,11 @@ async function handleConnectToggle() {
 }
 
 async function handleSetDb() {
-  const dbName = $("dbComboInput").value.trim();
-  if (!dbName) {
-    throw new Error("请输入或选择数据库名");
-  }
-  const data = await api(`${API_BASE}/api/database`, {
-    method: "POST",
-    body: JSON.stringify({ dbName }),
-  });
-  setStatus(data.status);
-  $("dbComboInput").value = dbName;
-  setComboOptions("collection", data.collections, "输入或选择集合");
-  $("collectionComboInput").value = "";
-  closeCombo("db");
-  if (data.warning) {
-    showToast(data.warning);
-    return;
-  }
-  showToast(`数据库已切换: ${dbName}`);
+  // kept for compatibility - tree handles db switching now
 }
 
 async function handleSetCollection() {
-  const collectionName = $("collectionComboInput").value.trim();
-  if (!collectionName) {
-    throw new Error("请输入或选择集合名");
-  }
-  const data = await api(`${API_BASE}/api/collection`, {
-    method: "POST",
-    body: JSON.stringify({ collectionName }),
-  });
-  setStatus(data.status);
-  $("collectionComboInput").value = collectionName;
-  closeCombo("collection");
-  showToast(`集合已切换: ${collectionName}`);
+  // kept for compatibility - tree handles collection switching now
 }
 
 async function handleQuery() {
@@ -1267,9 +1357,6 @@ function setupTabs() {
 }
 
 function bindEvents() {
-  const runSetDb = wrap(handleSetDb);
-  const runSetCollection = wrap(handleSetCollection);
-
   $("connectForm").addEventListener("submit", wrap(handleConnect));
   $("sidebarToggleBtn").addEventListener("click", () => {
     const next = !document.body.classList.contains("sidebar-collapsed");
@@ -1277,115 +1364,14 @@ function bindEvents() {
   });
   $("connectToggleBtn").addEventListener("click", wrap(handleConnectToggle));
   $("refreshDbBtn").addEventListener("click", wrap(refreshDatabases));
-  $("refreshCollectionBtn").addEventListener("click", wrap(refreshCollections));
-  $("setDbBtn").addEventListener("click", runSetDb);
-  $("setCollectionBtn").addEventListener("click", runSetCollection);
-
-  $("dbComboInput").addEventListener("focus", () => {
-    closeAllCombos("db");
-    openCombo("db");
-  });
-  $("dbComboInput").addEventListener("input", (event) => {
-    closeAllCombos("db");
-    openCombo("db");
-    comboState.db.highlighted = -1;
-    renderComboMenu("db", event.target.value);
-  });
-  $("dbComboInput").addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      moveComboHighlight("db", 1);
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      moveComboHighlight("db", -1);
-      return;
-    }
-    if (event.key === "Escape") {
-      closeCombo("db");
-      return;
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      if (comboState.db.open && comboState.db.highlighted >= 0) {
-        const value = comboState.db.filtered[comboState.db.highlighted];
-        if (value) {
-          $("dbComboInput").value = value;
-        }
-        closeCombo("db");
-        return;
-      }
-      runSetDb();
-    }
-  });
-  $("dbComboToggleBtn").addEventListener("click", (event) => {
-    event.preventDefault();
-    closeAllCombos("db");
-    toggleCombo("db");
-    $("dbComboInput").focus();
-  });
-
-  $("collectionComboInput").addEventListener("focus", () => {
-    closeAllCombos("collection");
-    openCombo("collection");
-  });
-  $("collectionComboInput").addEventListener("input", (event) => {
-    closeAllCombos("collection");
-    openCombo("collection");
-    comboState.collection.highlighted = -1;
-    renderComboMenu("collection", event.target.value);
-  });
-  $("collectionComboInput").addEventListener("keydown", (event) => {
-    if (event.key === "ArrowDown") {
-      event.preventDefault();
-      moveComboHighlight("collection", 1);
-      return;
-    }
-    if (event.key === "ArrowUp") {
-      event.preventDefault();
-      moveComboHighlight("collection", -1);
-      return;
-    }
-    if (event.key === "Escape") {
-      closeCombo("collection");
-      return;
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      if (comboState.collection.open && comboState.collection.highlighted >= 0) {
-        const value = comboState.collection.filtered[comboState.collection.highlighted];
-        if (value) {
-          $("collectionComboInput").value = value;
-        }
-        closeCombo("collection");
-        return;
-      }
-      runSetCollection();
-    }
-  });
-  $("collectionComboToggleBtn").addEventListener("click", (event) => {
-    event.preventDefault();
-    closeAllCombos("collection");
-    toggleCombo("collection");
-    $("collectionComboInput").focus();
-  });
 
   document.addEventListener("click", (event) => {
-    const dbField = $("dbComboInput").closest(".combo-field");
-    const collectionField = $("collectionComboInput").closest(".combo-field");
     const viewSelectRoot = $("viewModePicker");
     const exportSelectRoot = $("exportFormatPicker");
-    if (!dbField.contains(event.target)) {
-      closeCombo("db");
-    }
-    if (!collectionField.contains(event.target)) {
-      closeCombo("collection");
-    }
-    if (!viewSelectRoot.contains(event.target)) {
+    if (viewSelectRoot && !viewSelectRoot.contains(event.target)) {
       closeQuerySelect("viewMode");
     }
-    if (!exportSelectRoot.contains(event.target)) {
+    if (exportSelectRoot && !exportSelectRoot.contains(event.target)) {
       closeQuerySelect("exportFormat");
     }
   });
@@ -1476,6 +1462,7 @@ async function init() {
   await refreshStatus();
   await refreshDatabases({ suppressError: true });
   await refreshCollections({ suppressError: true });
+  renderDbTree();
   renderResults();
 }
 
