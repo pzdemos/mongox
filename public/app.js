@@ -67,10 +67,20 @@ function updateSidebarToggleButton(isCollapsed) {
   button.title = label;
 }
 
+function isMobile() {
+  return window.innerWidth <= 1060;
+}
+
 function applySidebarCollapsed(collapsed, { persist = true } = {}) {
   const applied = Boolean(collapsed);
   document.body.classList.toggle("sidebar-collapsed", applied);
   updateSidebarToggleButton(applied);
+
+  // Mobile backdrop toggle
+  const backdrop = $("sidebarBackdrop");
+  if (backdrop && isMobile()) {
+    backdrop.classList.toggle("visible", !applied);
+  }
 
   if (persist) {
     saveSidebarCollapsed(Boolean(collapsed));
@@ -78,9 +88,13 @@ function applySidebarCollapsed(collapsed, { persist = true } = {}) {
 }
 
 function initSidebarCollapseState() {
-  applySidebarCollapsed(getSavedSidebarCollapsed(), { persist: false });
+  // Mobile: default collapsed
+  const saved = getSavedSidebarCollapsed();
+  const mobile = isMobile();
+  applySidebarCollapsed(mobile ? true : saved, { persist: false });
   window.addEventListener("resize", () => {
-    applySidebarCollapsed(getSavedSidebarCollapsed(), { persist: false });
+    const isNowMobile = isMobile();
+    applySidebarCollapsed(isNowMobile ? true : getSavedSidebarCollapsed(), { persist: false });
   });
 }
 
@@ -269,6 +283,86 @@ function setStatus(status) {
   updateConnectToggle(status);
 }
 
+function closeIndexContextMenu() {
+  const menu = $("indexContextMenu");
+  if (menu) menu.hidden = true;
+}
+
+async function showIndexContextMenu(dbName, colName, x, y) {
+  const menu = $("indexContextMenu");
+  const title = $("indexContextMenuTitle");
+  const body = $("indexContextMenuBody");
+  if (!menu || !title || !body) return;
+
+  title.textContent = `${colName} · 索引`;
+  body.innerHTML = '<div class="context-menu-loading">加载中...</div>';
+
+  // Position menu
+  menu.hidden = false;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+
+  // Adjust for screen boundaries after first render
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth - 8) {
+      menu.style.left = `${Math.max(8, window.innerWidth - rect.width - 8)}px`;
+    }
+    if (rect.bottom > window.innerHeight - 8) {
+      menu.style.top = `${Math.max(8, window.innerHeight - rect.height - 8)}px`;
+    }
+  });
+
+  try {
+    const data = await api(`${API_BASE}/api/indexes?dbName=${encodeURIComponent(dbName)}&collectionName=${encodeURIComponent(colName)}`);
+    const indexes = data.indexes || [];
+    body.innerHTML = "";
+
+    if (!indexes.length) {
+      body.innerHTML = '<div class="context-menu-empty">无索引</div>';
+      return;
+    }
+
+    indexes.forEach((idx) => {
+      const item = document.createElement("div");
+      item.className = "context-menu-item";
+
+      const nameEl = document.createElement("div");
+      nameEl.className = "context-menu-item-name";
+      nameEl.textContent = idx.name;
+
+      const keyEl = document.createElement("div");
+      keyEl.className = "context-menu-item-key";
+      keyEl.textContent = JSON.stringify(idx.key);
+
+      item.appendChild(nameEl);
+      item.appendChild(keyEl);
+
+      if (idx.unique || idx.sparse) {
+        const tags = document.createElement("div");
+        tags.className = "context-menu-item-tags";
+        if (idx.unique) {
+          const tag = document.createElement("span");
+          tag.className = "context-menu-tag unique";
+          tag.textContent = "unique";
+          tags.appendChild(tag);
+        }
+        if (idx.sparse) {
+          const tag = document.createElement("span");
+          tag.className = "context-menu-tag sparse";
+          tag.textContent = "sparse";
+          tags.appendChild(tag);
+        }
+        item.appendChild(tags);
+      }
+
+      body.appendChild(item);
+    });
+  } catch (error) {
+    body.innerHTML = `<div class="context-menu-error">${error.message}</div>`;
+  }
+}
+
 function renderDbTree() {
   const container = $("dbTree");
   if (!container) return;
@@ -347,8 +441,38 @@ function renderDbTree() {
           const colRow = document.createElement("div");
           colRow.className = "tree-collection" + (dbName === currentDb && colName === currentCol ? " active" : "");
           colRow.textContent = colName;
+
+          // Right-click: show index context menu
+          colRow.addEventListener("contextmenu", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            closeIndexContextMenu();
+            showIndexContextMenu(dbName, colName, e.clientX, e.clientY);
+          });
+
+          // Long-press (mobile): show index context menu
+          let longPressTimer = null;
+          colRow.addEventListener("touchstart", (e) => {
+            const t = e.touches[0];
+            longPressTimer = setTimeout(() => {
+              e.preventDefault();
+              closeIndexContextMenu();
+              showIndexContextMenu(dbName, colName, t.clientX, t.clientY);
+              longPressTimer = null;
+            }, 500);
+          }, { passive: false });
+          colRow.addEventListener("touchend", () => {
+            if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+          });
+          colRow.addEventListener("touchmove", () => {
+            if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+          });
+
           colRow.addEventListener("click", async (e) => {
             e.stopPropagation();
+            // Auto-collapse sidebar on mobile after selecting collection
+            if (isMobile()) applySidebarCollapsed(true);
+
             if (dbName !== currentDb) {
               try {
                 const data = await api(`${API_BASE}/api/database`, {
@@ -1030,51 +1154,868 @@ async function refreshCollections({ suppressError = false } = {}) {
   }
 }
 
-/* ── row action: edit / delete ── */
+/* ── Canvas Table ── */
 
-let editingDocRaw = null;
+let canvasTable = null;
 
-function openEditModal(doc) {
-  editingDocRaw = doc;
-  const modal = $("editModal");
-  const idInput = $("editDocId");
-  const contentArea = $("editDocContent");
+const CT_COLORS = {
+  headerBg: "#f7ecdf",
+  headerText: "#7a6b5a",
+  cellBgEven: "#fffdf8",
+  cellBgOdd: "#faf5ed",
+  cellText: "#2c241b",
+  border: "#eadbca",
+  selection: "#5b7a9d",
+  hover: "#f8f0e4",
+  editBorder: "#5b7a9d",
+  idBadgeBg: "#f8ecdd",
+  idBadgeBorder: "#decdbb",
+  idBadgeText: "#4f3d2d",
+  danger: "#c0392b",
+};
 
-  const { _id, ...rest } = doc;
-  idInput.value = typeof _id === "object" ? formatJson(_id) : String(_id);
-  contentArea.value = formatJson(rest);
+const CT_DEFAULTS = {
+  headerHeight: 30,
+  rowHeight: 28,
+  fontSize: 12,
+  idColWidth: 120,
+  defaultColWidth: 160,
+  actionColWidth: 52,
+  minColWidth: 40,
+  maxColWidth: 400,
+};
 
-  modal.hidden = false;
-}
-
-function closeEditModal() {
-  $("editModal").hidden = true;
-  editingDocRaw = null;
-}
-
-async function handleEditSave() {
-  if (!editingDocRaw) return;
-  const content = $("editDocContent").value.trim();
-  let updateObj;
+function parseEditedValue(raw, original) {
+  const text = String(raw).trim();
+  if (!text) return null;
+  if (typeof original === "string") return text;
   try {
-    updateObj = JSON.parse(content);
+    return JSON.parse(text);
   } catch {
-    showToast("JSON 格式错误", true);
-    return;
+    if (typeof original === "number") {
+      const n = Number(text);
+      if (!Number.isNaN(n)) return n;
+    }
+    return text;
   }
-  const rawId = editingDocRaw._id;
-  const filterStr = formatJson({ _id: rawId });
-  try {
-    const data = await api(`${API_BASE}/api/update`, {
-      method: "POST",
-      body: JSON.stringify({ filter: filterStr, update: JSON.stringify({ $set: updateObj }), many: false }),
+}
+
+class CanvasTable {
+  constructor(container, options) {
+    this.container = container;
+    this.onDelete = options.onDelete || (() => {});
+    this.docs = options.docs || [];
+    this.displayDocs = options.displayDocs || [];
+
+    this.canvas = document.createElement("canvas");
+    this.canvas.className = "ct-canvas";
+    this.ctx = this.canvas.getContext("2d");
+    this.dpr = window.devicePixelRatio || 1;
+
+    this.wrapper = document.createElement("div");
+    this.wrapper.className = "ct-container";
+    this.wrapper.appendChild(this.canvas);
+    container.appendChild(this.wrapper);
+
+    this.width = 600;
+    this.height = 300;
+    this.scrollX = 0;
+    this.scrollY = 0;
+    this.maxScrollX = 0;
+    this.maxScrollY = 0;
+
+    this.selectedCell = null;
+    this.hoverCell = null;
+    this.editingCell = null;
+    this.previewEl = null;
+
+    this.resizingCol = null;
+    this.resizeStartX = 0;
+    this.resizeStartWidth = 0;
+
+    this.lastTapTime = 0;
+    this.lastTapCell = null;
+    this.touchStartX = 0;
+    this.touchStartY = 0;
+    this.touchScrollX = 0;
+    this.touchScrollY = 0;
+    this.isTouchScrolling = false;
+
+    this._rafId = null;
+    this._dirty = false;
+    this._destroyed = false;
+    this._bound = {};
+
+    this._computeCols();
+    this._bindEvents();
+    // Synchronous resize triggers reflow and sets canvas dimensions
+    this._resize();
+  }
+
+  _computeCols() {
+    const cols = [];
+    const seen = new Set();
+    this.docs.slice(0, 30).forEach((doc) => {
+      Object.keys(doc).forEach((key) => {
+        if (!seen.has(key) && seen.size < 10) {
+          seen.add(key);
+        }
+      });
     });
-    showToast(`更新成功，影响 ${data.modifiedCount || 0} 条`);
-    closeEditModal();
-    await handleQuery();
-  } catch (error) {
-    showToast(error.message, true);
+    if (!seen.has("_id")) {
+      cols.push({ key: "_id", label: "_id", width: CT_DEFAULTS.idColWidth });
+    }
+    seen.forEach((key) => {
+      if (key === "_id") {
+        cols.push({ key: "_id", label: "_id", width: CT_DEFAULTS.idColWidth });
+      } else {
+        cols.push({ key, label: key, width: CT_DEFAULTS.defaultColWidth });
+      }
+    });
+    cols.push({ key: "__action__", label: "", width: CT_DEFAULTS.actionColWidth });
+    this.cols = cols;
+    this._updateScrollBounds();
   }
+
+  _resize() {
+    const parentRect = this.container.getBoundingClientRect();
+    let w = Math.max(200, Math.floor(parentRect.width));
+    // Use available viewport space from container top to bottom
+    const availableH = Math.floor(window.innerHeight - parentRect.top - 12);
+    let h = Math.max(200, Math.min(availableH, Math.floor(window.innerHeight * 0.7)));
+    if (w < 200) w = 200;
+    this.width = w;
+    this.height = h;
+    this.wrapper.style.width = `${w}px`;
+    this.wrapper.style.height = `${h}px`;
+    this.canvas.style.width = `${w}px`;
+    this.canvas.style.height = `${h}px`;
+    this.canvas.width = Math.round(w * this.dpr);
+    this.canvas.height = Math.round(h * this.dpr);
+    this._updateScrollBounds();
+    this.scheduleRender();
+  }
+
+  _updateScrollBounds() {
+    const totalWidth = this.cols.reduce((s, c) => s + c.width, 0);
+    const totalHeight = CT_DEFAULTS.headerHeight + this.docs.length * CT_DEFAULTS.rowHeight;
+    this.maxScrollX = Math.max(0, totalWidth - this.width);
+    this.maxScrollY = Math.max(0, totalHeight - this.height);
+    this.scrollX = Math.min(this.scrollX, this.maxScrollX);
+    this.scrollY = Math.min(this.scrollY, this.maxScrollY);
+  }
+
+  _bindEvents() {
+    const b = this._bound;
+
+    b.resize = () => this._resize();
+    window.addEventListener("resize", b.resize);
+
+    b.click = (e) => this._handleClick(e);
+    b.dblclick = (e) => this._handleDblClick(e);
+    b.mousemove = (e) => this._handleMouseMove(e);
+    b.mousedown = (e) => this._handleMouseDown(e);
+    b.mouseup = (e) => this._handleMouseUp(e);
+    b.wheel = (e) => this._handleWheel(e);
+    b.touchstart = (e) => this._handleTouchStart(e);
+    b.touchmove = (e) => this._handleTouchMove(e);
+    b.touchend = (e) => this._handleTouchEnd(e);
+    b.keydown = (e) => this._handleKeyDown(e);
+
+    this.canvas.addEventListener("click", b.click);
+    this.canvas.addEventListener("dblclick", b.dblclick);
+    this.canvas.addEventListener("mousemove", b.mousemove);
+    this.canvas.addEventListener("mousedown", b.mousedown);
+    this.canvas.addEventListener("wheel", b.wheel, { passive: false });
+    this.canvas.addEventListener("touchstart", b.touchstart, { passive: false });
+    this.canvas.addEventListener("touchmove", b.touchmove, { passive: false });
+    this.canvas.addEventListener("touchend", b.touchend);
+    document.addEventListener("mouseup", b.mouseup);
+    document.addEventListener("keydown", b.keydown);
+  }
+
+  _getMousePos(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  }
+
+  _hitTest(mx, my) {
+    if (mx < 0 || my < 0) return null;
+    const colIdx = this._colAtX(mx + this.scrollX);
+    if (colIdx < 0) return null;
+    if (my < CT_DEFAULTS.headerHeight) {
+      return { row: -1, col: colIdx };
+    }
+    const rowIdx = Math.floor((my - CT_DEFAULTS.headerHeight + this.scrollY) / CT_DEFAULTS.rowHeight);
+    if (rowIdx < 0 || rowIdx >= this.docs.length) return null;
+    return { row: rowIdx, col: colIdx };
+  }
+
+  _colAtX(x) {
+    let cx = 0;
+    for (let i = 0; i < this.cols.length; i++) {
+      if (x >= cx && x < cx + this.cols[i].width) return i;
+      cx += this.cols[i].width;
+    }
+    return -1;
+  }
+
+  _colBoundary(x) {
+    let cx = 0;
+    for (let i = 0; i < this.cols.length; i++) {
+      cx += this.cols[i].width;
+      if (Math.abs(x - cx) <= 4) return i;
+    }
+    return -1;
+  }
+
+  _cellRect(row, col) {
+    let x = -this.scrollX;
+    for (let i = 0; i < col; i++) x += this.cols[i].width;
+    const y = CT_DEFAULTS.headerHeight + row * CT_DEFAULTS.rowHeight - this.scrollY;
+    return { x, y, w: this.cols[col].width, h: CT_DEFAULTS.rowHeight };
+  }
+
+  _isActionCol(col) {
+    return this.cols[col]?.key === "__action__";
+  }
+
+  _isIdCol(col) {
+    return this.cols[col]?.key === "_id";
+  }
+
+  scheduleRender() {
+    if (!this._dirty) {
+      this._dirty = true;
+      this._rafId = requestAnimationFrame(() => {
+        this._dirty = false;
+        this.render();
+      });
+    }
+  }
+
+  render() {
+    if (this._destroyed) return;
+    try {
+      const ctx = this.ctx;
+      const dpr = this.dpr;
+      const w = this.width;
+      const h = this.height;
+      if (w <= 0 || h <= 0) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      // Fill background
+      ctx.fillStyle = CT_COLORS.cellBgEven;
+      ctx.fillRect(0, 0, w, h);
+      this._drawHeader();
+      this._drawBody();
+    } catch (err) {
+      console.error("[CanvasTable] render error:", err);
+    }
+  }
+
+  _drawHeader() {
+    const ctx = this.ctx;
+    const hh = CT_DEFAULTS.headerHeight;
+    ctx.save();
+    ctx.fillStyle = CT_COLORS.headerBg;
+    ctx.fillRect(0, 0, this.width, hh);
+    ctx.fillStyle = CT_COLORS.headerText;
+    ctx.font = `500 ${CT_DEFAULTS.fontSize}px -apple-system, "Segoe UI", sans-serif`;
+    ctx.textBaseline = "middle";
+
+    let x = -this.scrollX;
+    for (let i = 0; i < this.cols.length; i++) {
+      const col = this.cols[i];
+      if (x + col.width > 0 && x < this.width) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(Math.max(0, x), 0, col.width, hh);
+        ctx.clip();
+        ctx.fillText(col.label, x + 8, hh / 2);
+        ctx.restore();
+      }
+      x += col.width;
+    }
+
+    ctx.strokeStyle = CT_COLORS.border;
+    ctx.beginPath();
+    ctx.moveTo(0, hh);
+    ctx.lineTo(this.width, hh);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  _drawBody() {
+    const ctx = this.ctx;
+    const hh = CT_DEFAULTS.headerHeight;
+    const rh = CT_DEFAULTS.rowHeight;
+    const fs = CT_DEFAULTS.fontSize;
+    const startRow = Math.max(0, Math.floor(this.scrollY / rh));
+    const visibleRows = Math.ceil((this.height - hh) / rh) + 1;
+    const endRow = Math.min(this.docs.length, startRow + visibleRows);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, hh, this.width, this.height - hh);
+    ctx.clip();
+
+    for (let r = startRow; r < endRow; r++) {
+      const ry = hh + r * rh - this.scrollY;
+      const isOdd = r % 2 === 1;
+
+      // Row background
+      ctx.fillStyle = isOdd ? CT_COLORS.cellBgOdd : CT_COLORS.cellBgEven;
+      ctx.fillRect(0, ry, this.width, rh);
+
+      // Hover highlight
+      if (this.hoverCell && this.hoverCell.row === r && !this._isActionCol(this.hoverCell.col)) {
+        ctx.fillStyle = CT_COLORS.hover;
+        let hx = -this.scrollX;
+        for (let i = 0; i < this.hoverCell.col; i++) hx += this.cols[i].width;
+        ctx.fillRect(hx, ry, this.cols[this.hoverCell.col].width, rh);
+      }
+
+      // Selection highlight
+      if (this.selectedCell && this.selectedCell.row === r) {
+        const sc = this.selectedCell.col;
+        let sx = -this.scrollX;
+        for (let i = 0; i < sc; i++) sx += this.cols[i].width;
+        ctx.strokeStyle = CT_COLORS.selection;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(sx + 0.75, ry + 0.75, this.cols[sc].width - 1.5, rh - 1.5);
+        ctx.lineWidth = 1;
+      }
+
+      // Cells
+      let cx = -this.scrollX;
+      for (let c = 0; c < this.cols.length; c++) {
+        const col = this.cols[c];
+        if (cx + col.width > 0 && cx < this.width) {
+          this._drawCell(r, c, cx, ry, col.width, rh);
+        }
+        cx += col.width;
+      }
+    }
+
+    // Grid lines
+    ctx.strokeStyle = CT_COLORS.border;
+    ctx.lineWidth = 0.5;
+    let lx = -this.scrollX;
+    for (let i = 0; i < this.cols.length; i++) {
+      lx += this.cols[i].width;
+      if (lx > 0 && lx < this.width) {
+        ctx.beginPath();
+        ctx.moveTo(lx, hh);
+        ctx.lineTo(lx, this.height);
+        ctx.stroke();
+      }
+    }
+
+    ctx.restore();
+  }
+
+  _drawCell(row, col, x, y, w, h) {
+    const ctx = this.ctx;
+    const key = this.cols[col].key;
+    const monoFont = `${CT_DEFAULTS.fontSize}px "SF Mono", Menlo, "IBM Plex Mono", monospace`;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x + 1, y, w - 2, h);
+    ctx.clip();
+
+    if (this._isActionCol(col)) {
+      this._drawDeleteIcon(x + w / 2, y + h / 2);
+      ctx.restore();
+      return;
+    }
+
+    if (this._isIdCol(col)) {
+      const idVal = this.docs[row]?._id;
+      const shortId = readIdValue(idVal).slice(-5);
+      ctx.font = `${CT_DEFAULTS.fontSize - 1}px "SF Mono", Menlo, "IBM Plex Mono", monospace`;
+      ctx.textBaseline = "middle";
+      const badgeW = ctx.measureText(shortId).width + 12;
+      const bx = x + 4;
+      const by = y + (h - 18) / 2;
+
+      ctx.fillStyle = CT_COLORS.idBadgeBg;
+      ctx.strokeStyle = CT_COLORS.idBadgeBorder;
+      ctx.lineWidth = 1;
+      const badgeRW = Math.min(badgeW, w - 8);
+      const badgeRH = 18;
+      const badgeR = 3;
+      ctx.beginPath();
+      ctx.moveTo(bx + badgeR, by);
+      ctx.lineTo(bx + badgeRW - badgeR, by);
+      ctx.quadraticCurveTo(bx + badgeRW, by, bx + badgeRW, by + badgeR);
+      ctx.lineTo(bx + badgeRW, by + badgeRH - badgeR);
+      ctx.quadraticCurveTo(bx + badgeRW, by + badgeRH, bx + badgeRW - badgeR, by + badgeRH);
+      ctx.lineTo(bx + badgeR, by + badgeRH);
+      ctx.quadraticCurveTo(bx, by + badgeRH, bx, by + badgeRH - badgeR);
+      ctx.lineTo(bx, by + badgeR);
+      ctx.quadraticCurveTo(bx, by, bx + badgeR, by);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = CT_COLORS.idBadgeText;
+      ctx.fillText(shortId, bx + 6, by + 9);
+      ctx.restore();
+      return;
+    }
+
+    const displayVal = this.displayDocs[row]?.[key];
+    const text = stringifyValue(displayVal);
+
+    ctx.fillStyle = CT_COLORS.cellText;
+    ctx.font = monoFont;
+    ctx.textBaseline = "middle";
+
+    const padding = 6;
+    const maxW = w - padding * 2;
+    let displayText = text;
+    if (maxW > 20 && text.length > 0 && ctx.measureText(text).width > maxW) {
+      while (displayText.length > 1 && ctx.measureText(displayText + "…").width > maxW) {
+        displayText = displayText.slice(0, -1);
+      }
+      displayText += "…";
+    }
+    ctx.fillText(displayText, x + padding, y + h / 2);
+    ctx.restore();
+  }
+
+  _drawDeleteIcon(cx, cy) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.strokeStyle = CT_COLORS.danger;
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    const s = 5;
+    // Trash can body
+    ctx.beginPath();
+    ctx.moveTo(cx - s, cy - s + 3);
+    ctx.lineTo(cx - s + 1, cy + s);
+    ctx.lineTo(cx + s - 1, cy + s);
+    ctx.lineTo(cx + s, cy - s + 3);
+    ctx.stroke();
+    // Trash can lid
+    ctx.beginPath();
+    ctx.moveTo(cx - s - 1, cy - s + 3);
+    ctx.lineTo(cx + s + 1, cy - s + 3);
+    ctx.stroke();
+    // Trash can handle
+    ctx.beginPath();
+    ctx.moveTo(cx - 2, cy - s + 3);
+    ctx.lineTo(cx - 2, cy - s + 1);
+    ctx.lineTo(cx + 2, cy - s + 1);
+    ctx.lineTo(cx + 2, cy - s + 3);
+    ctx.stroke();
+    // Vertical lines inside
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(cx - 2, cy - s + 6);
+    ctx.lineTo(cx - 2, cy + s - 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - s + 6);
+    ctx.lineTo(cx, cy + s - 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + 2, cy - s + 6);
+    ctx.lineTo(cx + 2, cy + s - 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  _handleClick(e) {
+    const pos = this._getMousePos(e);
+    const cell = this._hitTest(pos.x, pos.y);
+    if (!cell) {
+      this._closePreview();
+      return;
+    }
+
+    // Close any active editor first
+    if (this.editingCell) {
+      this.cancelEdit();
+    }
+
+    if (cell.row < 0) return;
+
+    if (this._isActionCol(cell.col)) {
+      const doc = this.docs[cell.row];
+      if (doc) this.onDelete(doc);
+      return;
+    }
+
+    this.selectedCell = cell;
+    this.scheduleRender();
+
+    if (!this._isIdCol(cell.col)) {
+      this._showPreview(cell.row, cell.col);
+    }
+  }
+
+  _handleDblClick(e) {
+    const pos = this._getMousePos(e);
+    const cell = this._hitTest(pos.x, pos.y);
+    if (!cell || cell.row < 0) return;
+    if (this._isIdCol(cell.col) || this._isActionCol(cell.col)) return;
+    this._closePreview();
+    this._startEdit(cell.row, cell.col);
+  }
+
+  _handleMouseMove(e) {
+    const pos = this._getMousePos(e);
+    const cell = this._hitTest(pos.x, pos.y);
+
+    if (this.resizingCol !== null) {
+      const dx = e.clientX - this.resizeStartX;
+      const newWidth = Math.max(CT_DEFAULTS.minColWidth, Math.min(CT_DEFAULTS.maxColWidth, this.resizeStartWidth + dx));
+      this.cols[this.resizingCol].width = newWidth;
+      this._updateScrollBounds();
+      this.scheduleRender();
+      return;
+    }
+
+    if (pos.y < CT_DEFAULTS.headerHeight) {
+      const boundary = this._colBoundary(pos.x + this.scrollX);
+      this.canvas.style.cursor = boundary >= 0 ? "col-resize" : "default";
+    } else if (cell && this._isActionCol(cell.col)) {
+      this.canvas.style.cursor = "pointer";
+    } else if (cell && !this._isIdCol(cell.col)) {
+      this.canvas.style.cursor = "text";
+    } else {
+      this.canvas.style.cursor = "default";
+    }
+
+    const prevHover = this.hoverCell;
+    this.hoverCell = cell && cell.row >= 0 ? cell : null;
+    if (!prevHover && !this.hoverCell) return;
+    if (prevHover && this.hoverCell && prevHover.row === this.hoverCell.row && prevHover.col === this.hoverCell.col) return;
+    this.scheduleRender();
+  }
+
+  _handleMouseDown(e) {
+    const pos = this._getMousePos(e);
+    if (pos.y < CT_DEFAULTS.headerHeight) {
+      const boundary = this._colBoundary(pos.x + this.scrollX);
+      if (boundary >= 0) {
+        this.resizingCol = boundary;
+        this.resizeStartX = e.clientX;
+        this.resizeStartWidth = this.cols[boundary].width;
+        e.preventDefault();
+      }
+    }
+  }
+
+  _handleMouseUp(e) {
+    if (this.resizingCol !== null) {
+      this.resizingCol = null;
+    }
+  }
+
+  _handleWheel(e) {
+    e.preventDefault();
+    const dx = e.deltaX || 0;
+    const dy = e.deltaY || 0;
+    // Horizontal: trackpad deltaX or Shift+wheel
+    if (dx !== 0) {
+      this.scrollX = Math.max(0, Math.min(this.maxScrollX, this.scrollX + dx));
+    }
+    if (e.shiftKey && dy !== 0) {
+      this.scrollX = Math.max(0, Math.min(this.maxScrollX, this.scrollX + dy));
+    } else if (dy !== 0) {
+      this.scrollY = Math.max(0, Math.min(this.maxScrollY, this.scrollY + dy));
+    }
+    this._closePreview();
+    this.scheduleRender();
+  }
+
+  _handleTouchStart(e) {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    this.touchStartX = t.clientX;
+    this.touchStartY = t.clientY;
+    this.touchScrollX = this.scrollX;
+    this.touchScrollY = this.scrollY;
+    this.isTouchScrolling = false;
+  }
+
+  _handleTouchMove(e) {
+    if (e.touches.length !== 1) return;
+    e.preventDefault();
+    const t = e.touches[0];
+    const dx = this.touchStartX - t.clientX;
+    const dy = this.touchStartY - t.clientY;
+    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) this.isTouchScrolling = true;
+    this.scrollX = Math.max(0, Math.min(this.maxScrollX, this.touchScrollX + dx));
+    this.scrollY = Math.max(0, Math.min(this.maxScrollY, this.touchScrollY + dy));
+    this._closePreview();
+    this.scheduleRender();
+  }
+
+  _handleTouchEnd(e) {
+    if (this.isTouchScrolling) return;
+    const rect = this.canvas.getBoundingClientRect();
+    const t = e.changedTouches[0];
+    const pos = { x: t.clientX - rect.left, y: t.clientY - rect.top };
+    const cell = this._hitTest(pos.x, pos.y);
+    if (!cell || cell.row < 0) return;
+
+    if (this.editingCell) this.cancelEdit();
+
+    // Single tap on mobile: select + edit directly
+    if (this._isActionCol(cell.col)) {
+      const doc = this.docs[cell.row];
+      if (doc) this.onDelete(doc);
+      return;
+    }
+
+    this.selectedCell = cell;
+    this.scheduleRender();
+
+    if (!this._isIdCol(cell.col)) {
+      this._startEdit(cell.row, cell.col);
+    }
+  }
+
+  _handleKeyDown(e) {
+    if (e.key === "Escape") {
+      if (this.editingCell) {
+        this.cancelEdit();
+      } else if (this.previewEl) {
+        this._closePreview();
+      }
+    }
+  }
+
+  _isComplexValue(value) {
+    return value !== null && value !== undefined && typeof value === "object";
+  }
+
+  _valueToEditString(value) {
+    if (value === null) return "null";
+    if (value === undefined) return "";
+    if (typeof value === "string") return value;
+    return JSON.stringify(value, null, 2);
+  }
+
+  _startEdit(row, col) {
+    if (this.editingCell) this.cancelEdit();
+    this._closePreview();
+
+    const key = this.cols[col].key;
+    const doc = this.docs[row];
+    if (!doc) return;
+    const rawValue = doc[key];
+    const isComplex = this._isComplexValue(rawValue);
+    const rect = this._cellRect(row, col);
+    const canvasRect = this.canvas.getBoundingClientRect();
+
+    const el = document.createElement("div");
+    el.className = "ct-editor";
+    el.style.left = `${canvasRect.left + rect.x}px`;
+    el.style.top = `${canvasRect.top + rect.y}px`;
+    el.style.width = `${rect.w}px`;
+
+    const input = document.createElement(isComplex ? "textarea" : "input");
+    input.className = "ct-editor-input";
+    input.value = this._valueToEditString(rawValue);
+    if (isComplex) {
+      input.rows = 4;
+      el.style.minHeight = `${CT_DEFAULTS.rowHeight * 4}px`;
+    }
+
+    // Save/Cancel button bar
+    const bar = document.createElement("div");
+    bar.className = "ct-editor-bar";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "ct-editor-save";
+    saveBtn.textContent = "保存";
+    saveBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void this.commitEdit();
+    });
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "ct-editor-cancel";
+    cancelBtn.textContent = "取消";
+    cancelBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.cancelEdit();
+    });
+
+    bar.appendChild(saveBtn);
+    bar.appendChild(cancelBtn);
+    el.appendChild(input);
+    el.appendChild(bar);
+    document.body.appendChild(el);
+    input.focus();
+    if (!isComplex) input.select();
+
+    this.editingCell = { row, col, inputEl: input, wrapperEl: el };
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        this.cancelEdit();
+      }
+    });
+  }
+
+  async commitEdit() {
+    if (!this.editingCell) return;
+    const { row, col, inputEl, wrapperEl } = this.editingCell;
+    const key = this.cols[col].key;
+    const doc = this.docs[row];
+    const originalValue = doc[key];
+    const editValue = inputEl.value;
+
+    const newValue = parseEditedValue(editValue, originalValue);
+    this.editingCell = null;
+    if (wrapperEl && wrapperEl.isConnected) wrapperEl.remove();
+
+    if (JSON.stringify(originalValue) === JSON.stringify(newValue)) return;
+
+    try {
+      const filterStr = formatJson({ _id: doc._id });
+      await api(`${API_BASE}/api/update`, {
+        method: "POST",
+        body: JSON.stringify({ filter: filterStr, update: JSON.stringify({ [key]: newValue }), many: false }),
+      });
+      doc[key] = newValue;
+      this.displayDocs[row][key] = toDisplayValue(newValue);
+      showToast(`已更新字段 ${key}`);
+      this.scheduleRender();
+    } catch (error) {
+      showToast(`更新失败: ${error.message}`, true);
+      this.scheduleRender();
+    }
+  }
+
+  cancelEdit() {
+    if (!this.editingCell) return;
+    const { wrapperEl } = this.editingCell;
+    this.editingCell = null;
+    if (wrapperEl && wrapperEl.isConnected) wrapperEl.remove();
+    this.scheduleRender();
+  }
+
+  _showPreview(row, col) {
+    this._closePreview();
+    const key = this.cols[col].key;
+    const displayVal = this.displayDocs[row]?.[key];
+    const text = stringifyValue(displayVal);
+
+    const ctx = this.ctx;
+    ctx.font = `${CT_DEFAULTS.fontSize}px "SF Mono", Menlo, monospace`;
+    const colW = this.cols[col].width - 12;
+    if (ctx.measureText(text).width <= colW) return;
+
+    const el = document.createElement("div");
+    el.className = "ct-preview";
+
+    const pre = document.createElement("pre");
+    pre.textContent = text;
+    el.appendChild(pre);
+
+    const actions = document.createElement("div");
+    actions.className = "ct-preview-actions";
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "ct-preview-edit-btn";
+    editBtn.textContent = "编辑";
+    editBtn.addEventListener("click", () => {
+      this._closePreview();
+      this._startEdit(row, col);
+    });
+    actions.appendChild(editBtn);
+    el.appendChild(actions);
+
+    document.body.appendChild(el);
+
+    const rect = this._cellRect(row, col);
+    const canvasRect = this.canvas.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    let top = canvasRect.top + rect.y + rect.h + 4;
+    let left = canvasRect.left + rect.x;
+    if (left + elRect.width > window.innerWidth - 8) left = window.innerWidth - elRect.width - 8;
+    if (top + elRect.height > window.innerHeight - 8) top = canvasRect.top + rect.y - elRect.height - 4;
+    if (left < 8) left = 8;
+    el.style.top = `${top}px`;
+    el.style.left = `${left}px`;
+
+    this.previewEl = el;
+
+    const closeOnOutside = (e) => {
+      if (!el.contains(e.target) && e.target !== this.canvas) {
+        this._closePreview();
+        document.removeEventListener("mousedown", closeOnOutside);
+        document.removeEventListener("touchstart", closeOnOutside);
+      }
+    };
+    setTimeout(() => {
+      document.addEventListener("mousedown", closeOnOutside);
+      document.addEventListener("touchstart", closeOnOutside);
+    }, 50);
+  }
+
+  _closePreview() {
+    if (this.previewEl) {
+      this.previewEl.remove();
+      this.previewEl = null;
+    }
+  }
+
+  removeRow(doc) {
+    const idx = this.docs.indexOf(doc);
+    if (idx < 0) return;
+    this.docs.splice(idx, 1);
+    this.displayDocs.splice(idx, 1);
+    this._updateScrollBounds();
+    this.scheduleRender();
+  }
+
+  destroy() {
+    this._destroyed = true;
+    if (this._rafId) cancelAnimationFrame(this._rafId);
+    this.cancelEdit();
+    this._closePreview();
+    const b = this._bound;
+    if (b.resize) window.removeEventListener("resize", b.resize);
+    if (b.click) this.canvas.removeEventListener("click", b.click);
+    if (b.dblclick) this.canvas.removeEventListener("dblclick", b.dblclick);
+    if (b.mousemove) this.canvas.removeEventListener("mousemove", b.mousemove);
+    if (b.mousedown) this.canvas.removeEventListener("mousedown", b.mousedown);
+    if (b.wheel) this.canvas.removeEventListener("wheel", b.wheel);
+    if (b.touchstart) this.canvas.removeEventListener("touchstart", b.touchstart);
+    if (b.touchmove) this.canvas.removeEventListener("touchmove", b.touchmove);
+    if (b.touchend) this.canvas.removeEventListener("touchend", b.touchend);
+    if (b.mouseup) document.removeEventListener("mouseup", b.mouseup);
+    if (b.keydown) document.removeEventListener("keydown", b.keydown);
+    this.wrapper.remove();
+  }
+}
+
+function openDeletePopoverForCanvas(doc) {
+  pendingDeleteDoc = doc;
+  pendingDeleteAnchor = null;
+  const popover = $("deletePopover");
+  $("deleteDocId").textContent = typeof doc._id === "object" ? formatJson(doc._id) : String(doc._id);
+  // Center on screen, disable animation that conflicts with transform
+  popover.style.animation = "none";
+  popover.style.top = "50%";
+  popover.style.left = "50%";
+  popover.style.transform = "translate(-50%, -50%)";
+  popover.hidden = false;
 }
 
 let pendingDeleteDoc = null;
@@ -1094,7 +2035,10 @@ function openDeletePopover(event, doc) {
 }
 
 function closeDeletePopover() {
-  $("deletePopover").hidden = true;
+  const popover = $("deletePopover");
+  popover.hidden = true;
+  popover.style.animation = "";
+  popover.style.transform = "";
   pendingDeleteDoc = null;
   pendingDeleteAnchor = null;
 }
@@ -1109,8 +2053,13 @@ async function handleDeleteConfirm() {
       body: JSON.stringify({ filter: filterStr, many: false }),
     });
     showToast(`已删除 ${data.deletedCount || 0} 条`);
+    const deletedDoc = pendingDeleteDoc;
     closeDeletePopover();
-    await handleQuery();
+    if (canvasTable) {
+      canvasTable.removeRow(deletedDoc);
+    }
+    state.docs = state.docs.filter((d) => d !== deletedDoc);
+    $("resultsMeta").textContent = `结果条数: ${state.docs.length}`;
   } catch (error) {
     showToast(error.message, true);
   }
@@ -1119,10 +2068,14 @@ async function handleDeleteConfirm() {
 function renderResults() {
   const container = $("resultsContainer");
   const docs = state.docs;
-  const displayDocs = docs.map((doc) => toDisplayValue(doc));
   const mode = $("viewMode").value;
   const meta = $("resultsMeta");
   meta.textContent = `结果条数: ${docs.length}`;
+
+  if (canvasTable) {
+    canvasTable.destroy();
+    canvasTable = null;
+  }
 
   container.innerHTML = "";
   if (!docs.length) {
@@ -1131,6 +2084,7 @@ function renderResults() {
   }
 
   if (mode === "json") {
+    const displayDocs = docs.map((doc) => toDisplayValue(doc));
     const pre = document.createElement("pre");
     pre.className = "result-json";
     pre.textContent = formatJson(displayDocs);
@@ -1139,6 +2093,7 @@ function renderResults() {
   }
 
   if (mode === "cards") {
+    const displayDocs = docs.map((doc) => toDisplayValue(doc));
     const grid = document.createElement("div");
     grid.className = "card-grid";
     docs.forEach((doc, index) => {
@@ -1160,75 +2115,33 @@ function renderResults() {
     return;
   }
 
-  const columns = new Set(["_id"]);
-  docs.slice(0, 30).forEach((doc) => {
-    Object.keys(doc).forEach((key) => {
-      if (columns.size < 10) {
-        columns.add(key);
-      }
-    });
-  });
-
-  const keys = [...columns];
-  const table = document.createElement("table");
-  table.className = "result-table";
-  const thead = document.createElement("thead");
-  const trHead = document.createElement("tr");
-  keys.forEach((k) => {
-    const th = document.createElement("th");
-    th.textContent = k;
-    trHead.appendChild(th);
-  });
-  const thAction = document.createElement("th");
-  thAction.textContent = "操作";
-  thAction.style.width = "64px";
-  trHead.appendChild(thAction);
-  thead.appendChild(trHead);
-  table.appendChild(thead);
-
-  const tbody = document.createElement("tbody");
-  docs.forEach((doc, index) => {
-    const tr = document.createElement("tr");
-    keys.forEach((k) => {
-      const td = document.createElement("td");
-      if (k === "_id") {
-        const idFold = createIdFoldElement(doc[k]);
-        if (idFold) {
-          td.appendChild(idFold);
+  // table 模式 — Canvas 渲染
+  try {
+    canvasTable = new CanvasTable(container, {
+      docs,
+      displayDocs: docs.map((d) => toDisplayValue(d)),
+      onDelete: async (doc) => {
+        const idDisplay = typeof doc._id === "object" ? formatJson(doc._id) : String(doc._id);
+        if (!window.confirm(`确认删除该文档？\n\n${idDisplay}`)) return;
+        try {
+          const filterStr = formatJson({ _id: doc._id });
+          const data = await api(`${API_BASE}/api/delete`, {
+            method: "POST",
+            body: JSON.stringify({ filter: filterStr, many: false }),
+          });
+          showToast(`已删除 ${data.deletedCount || 0} 条`);
+          if (canvasTable) canvasTable.removeRow(doc);
+          state.docs = state.docs.filter((d) => d !== doc);
+          $("resultsMeta").textContent = `结果条数: ${state.docs.length}`;
+        } catch (error) {
+          showToast(error.message, true);
         }
-      } else {
-        td.textContent = compact(displayDocs[index]?.[k], 120);
-      }
-      tr.appendChild(td);
+      },
     });
-
-    const tdAction = document.createElement("td");
-    const actionDiv = document.createElement("div");
-    actionDiv.className = "row-actions";
-
-    const editBtn = document.createElement("button");
-    editBtn.type = "button";
-    editBtn.className = "row-action-btn action-edit";
-    editBtn.title = "编辑";
-    editBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
-    editBtn.addEventListener("click", () => openEditModal(doc));
-
-    const deleteBtn = document.createElement("button");
-    deleteBtn.type = "button";
-    deleteBtn.className = "row-action-btn action-delete";
-    deleteBtn.title = "删除";
-    deleteBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-    deleteBtn.addEventListener("click", (e) => openDeletePopover(e, doc));
-
-    actionDiv.appendChild(editBtn);
-    actionDiv.appendChild(deleteBtn);
-    tdAction.appendChild(actionDiv);
-    tr.appendChild(tdAction);
-
-    tbody.appendChild(tr);
-  });
-  table.appendChild(tbody);
-  container.appendChild(table);
+  } catch (err) {
+    console.error("[CanvasTable] creation error:", err);
+    container.innerHTML = `<pre class="result-json">Canvas 渲染失败: ${err.message}\n\n${formatJson(docs.map((d) => toDisplayValue(d)))}</pre>`;
+  }
 }
 
 function readQueryPayload() {
@@ -1476,6 +2389,12 @@ function bindEvents() {
     const next = !document.body.classList.contains("sidebar-collapsed");
     applySidebarCollapsed(next);
   });
+
+  // Mobile: backdrop click closes sidebar
+  $("sidebarBackdrop").addEventListener("click", () => {
+    applySidebarCollapsed(true);
+  });
+
   $("connectToggleBtn").addEventListener("click", wrap(handleConnectToggle));
   $("refreshDbBtn").addEventListener("click", wrap(refreshDatabases));
 
@@ -1491,6 +2410,11 @@ function bindEvents() {
     const popover = $("deletePopover");
     if (popover && !popover.hidden && !popover.contains(event.target) && !event.target.closest(".action-delete")) {
       closeDeletePopover();
+    }
+    // Close index context menu on outside click
+    const indexMenu = $("indexContextMenu");
+    if (indexMenu && !indexMenu.hidden && !indexMenu.contains(event.target)) {
+      closeIndexContextMenu();
     }
   });
 
@@ -1512,17 +2436,15 @@ function bindEvents() {
   $("deleteBtn").addEventListener("click", wrap(handleDelete));
   $("statsBtn").addEventListener("click", wrap(handleStats));
 
-  // edit modal
-  $("editModalClose").addEventListener("click", closeEditModal);
-  $("editCancelBtn").addEventListener("click", closeEditModal);
-  $("editSaveBtn").addEventListener("click", wrap(handleEditSave));
-  $("editModal").addEventListener("click", (e) => {
-    if (e.target === $("editModal")) closeEditModal();
-  });
-
   // delete popover
   $("deleteCancelBtn").addEventListener("click", closeDeletePopover);
   $("deleteConfirmBtn").addEventListener("click", wrap(handleDeleteConfirm));
+
+  // index context menu close
+  $("indexContextMenuClose").addEventListener("click", closeIndexContextMenu);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeIndexContextMenu();
+  });
 
   $("terminalRunBtn").addEventListener("click", () => {
     void executeTerminalCommand();

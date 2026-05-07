@@ -82,6 +82,8 @@
         </div>
       </aside>
 
+      <div id="sidebarBackdrop" class="sidebar-backdrop"></div>
+
       <section class="panel main-panel">
         <div class="main-topbar">
           <button
@@ -289,29 +291,6 @@
 
     <div id="toast" class="toast"></div>
 
-    <div id="editModal" class="modal-overlay" hidden>
-      <div class="modal">
-        <div class="modal-header">
-          <h3>编辑文档</h3>
-          <button id="editModalClose" type="button" class="modal-close-btn" aria-label="关闭">&times;</button>
-        </div>
-        <div class="modal-body">
-          <label>
-            <span class="modal-label">_id（不可修改）</span>
-            <input id="editDocId" type="text" readonly class="edit-id-input" />
-          </label>
-          <label>
-            <span class="modal-label">文档内容（JSON）</span>
-            <textarea id="editDocContent" rows="14" spellcheck="false"></textarea>
-          </label>
-        </div>
-        <div class="modal-footer">
-          <button id="editCancelBtn" type="button" class="ghost">取消</button>
-          <button id="editSaveBtn" type="button">保存</button>
-        </div>
-      </div>
-    </div>
-
     <div id="deletePopover" class="delete-popover" hidden>
       <div class="delete-popover-body">
         <p>确认删除该文档？</p>
@@ -321,6 +300,14 @@
         <button id="deleteCancelBtn" type="button" class="ghost">取消</button>
         <button id="deleteConfirmBtn" type="button" class="danger">删除</button>
       </div>
+    </div>
+
+    <div id="indexContextMenu" class="context-menu" hidden>
+      <div class="context-menu-header">
+        <span id="indexContextMenuTitle">索引</span>
+        <button id="indexContextMenuClose" type="button" class="context-menu-close-btn">&times;</button>
+      </div>
+      <div id="indexContextMenuBody" class="context-menu-body"></div>
     </div>
 
     <script type="module" src="./app.js"></script>

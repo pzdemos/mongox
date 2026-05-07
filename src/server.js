@@ -998,6 +998,28 @@ app.get(
   }),
 );
 
+app.get(
+  apiPath("/indexes"),
+  asyncHandler(async (req, res) => {
+    assertConnected();
+    const dbName = String(req.query?.dbName || state.dbName || "").trim();
+    const collectionName = String(req.query?.collectionName || "").trim();
+    if (!dbName) return res.status(400).json({ ok: false, error: "请先选择数据库" });
+    if (!collectionName) return res.status(400).json({ ok: false, error: "集合名不能为空" });
+    const collection = state.client.db(dbName).collection(collectionName);
+    const indexes = await collection.indexes();
+    res.json({
+      ok: true,
+      indexes: indexes.map((idx) => ({
+        name: idx.name,
+        key: idx.key,
+        unique: Boolean(idx.unique),
+        sparse: Boolean(idx.sparse),
+      })),
+    });
+  }),
+);
+
 app.post(
   apiPath("/export"),
   asyncHandler(async (req, res) => {
