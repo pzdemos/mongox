@@ -1030,6 +1030,92 @@ async function refreshCollections({ suppressError = false } = {}) {
   }
 }
 
+/* ── row action: edit / delete ── */
+
+let editingDocRaw = null;
+
+function openEditModal(doc) {
+  editingDocRaw = doc;
+  const modal = $("editModal");
+  const idInput = $("editDocId");
+  const contentArea = $("editDocContent");
+
+  const { _id, ...rest } = doc;
+  idInput.value = typeof _id === "object" ? formatJson(_id) : String(_id);
+  contentArea.value = formatJson(rest);
+
+  modal.hidden = false;
+}
+
+function closeEditModal() {
+  $("editModal").hidden = true;
+  editingDocRaw = null;
+}
+
+async function handleEditSave() {
+  if (!editingDocRaw) return;
+  const content = $("editDocContent").value.trim();
+  let updateObj;
+  try {
+    updateObj = JSON.parse(content);
+  } catch {
+    showToast("JSON 格式错误", true);
+    return;
+  }
+  const rawId = editingDocRaw._id;
+  const filterStr = formatJson({ _id: rawId });
+  try {
+    const data = await api(`${API_BASE}/api/update`, {
+      method: "POST",
+      body: JSON.stringify({ filter: filterStr, update: JSON.stringify({ $set: updateObj }), many: false }),
+    });
+    showToast(`更新成功，影响 ${data.modifiedCount || 0} 条`);
+    closeEditModal();
+    await handleQuery();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+let pendingDeleteDoc = null;
+let pendingDeleteAnchor = null;
+
+function openDeletePopover(event, doc) {
+  pendingDeleteDoc = doc;
+  pendingDeleteAnchor = event.currentTarget;
+
+  const popover = $("deletePopover");
+  $("deleteDocId").textContent = typeof doc._id === "object" ? formatJson(doc._id) : String(doc._id);
+
+  const rect = pendingDeleteAnchor.getBoundingClientRect();
+  popover.style.top = `${rect.bottom + 6}px`;
+  popover.style.left = `${Math.max(8, rect.left - 80)}px`;
+  popover.hidden = false;
+}
+
+function closeDeletePopover() {
+  $("deletePopover").hidden = true;
+  pendingDeleteDoc = null;
+  pendingDeleteAnchor = null;
+}
+
+async function handleDeleteConfirm() {
+  if (!pendingDeleteDoc) return;
+  const rawId = pendingDeleteDoc._id;
+  const filterStr = formatJson({ _id: rawId });
+  try {
+    const data = await api(`${API_BASE}/api/delete`, {
+      method: "POST",
+      body: JSON.stringify({ filter: filterStr, many: false }),
+    });
+    showToast(`已删除 ${data.deletedCount || 0} 条`);
+    closeDeletePopover();
+    await handleQuery();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
 function renderResults() {
   const container = $("resultsContainer");
   const docs = state.docs;
@@ -1040,7 +1126,7 @@ function renderResults() {
 
   container.innerHTML = "";
   if (!docs.length) {
-    container.innerHTML = '<p class="meta">没有匹配数据</p>';
+    container.innerHTML = '<p class="results-empty">没有匹配数据</p>';
     return;
   }
 
@@ -1093,6 +1179,10 @@ function renderResults() {
     th.textContent = k;
     trHead.appendChild(th);
   });
+  const thAction = document.createElement("th");
+  thAction.textContent = "操作";
+  thAction.style.width = "64px";
+  trHead.appendChild(thAction);
   thead.appendChild(trHead);
   table.appendChild(thead);
 
@@ -1111,6 +1201,30 @@ function renderResults() {
       }
       tr.appendChild(td);
     });
+
+    const tdAction = document.createElement("td");
+    const actionDiv = document.createElement("div");
+    actionDiv.className = "row-actions";
+
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "row-action-btn action-edit";
+    editBtn.title = "编辑";
+    editBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
+    editBtn.addEventListener("click", () => openEditModal(doc));
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "row-action-btn action-delete";
+    deleteBtn.title = "删除";
+    deleteBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
+    deleteBtn.addEventListener("click", (e) => openDeletePopover(e, doc));
+
+    actionDiv.appendChild(editBtn);
+    actionDiv.appendChild(deleteBtn);
+    tdAction.appendChild(actionDiv);
+    tr.appendChild(tdAction);
+
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
@@ -1374,6 +1488,10 @@ function bindEvents() {
     if (exportSelectRoot && !exportSelectRoot.contains(event.target)) {
       closeQuerySelect("exportFormat");
     }
+    const popover = $("deletePopover");
+    if (popover && !popover.hidden && !popover.contains(event.target) && !event.target.closest(".action-delete")) {
+      closeDeletePopover();
+    }
   });
 
   $("runQueryBtn").addEventListener("click", wrap(handleQuery));
@@ -1393,6 +1511,18 @@ function bindEvents() {
   $("updateBtn").addEventListener("click", wrap(handleUpdate));
   $("deleteBtn").addEventListener("click", wrap(handleDelete));
   $("statsBtn").addEventListener("click", wrap(handleStats));
+
+  // edit modal
+  $("editModalClose").addEventListener("click", closeEditModal);
+  $("editCancelBtn").addEventListener("click", closeEditModal);
+  $("editSaveBtn").addEventListener("click", wrap(handleEditSave));
+  $("editModal").addEventListener("click", (e) => {
+    if (e.target === $("editModal")) closeEditModal();
+  });
+
+  // delete popover
+  $("deleteCancelBtn").addEventListener("click", closeDeletePopover);
+  $("deleteConfirmBtn").addEventListener("click", wrap(handleDeleteConfirm));
 
   $("terminalRunBtn").addEventListener("click", () => {
     void executeTerminalCommand();

@@ -1057,6 +1057,14 @@ button.danger {
   padding: 0;
 }
 
+.results-empty {
+  margin: 0;
+  padding: 40px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .result-json {
   margin: 0;
   white-space: pre-wrap;
@@ -1218,6 +1226,189 @@ button.danger {
   opacity: 1;
 }
 
+/* ── table row actions ── */
+.row-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.row-action-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0;
+}
+
+.row-action-btn svg {
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+
+.row-action-btn:hover {
+  background: #f1e2cf;
+  border-color: #dcc7b0;
+  color: var(--text);
+}
+
+.row-action-btn.action-delete:hover {
+  background: #fde8e4;
+  border-color: #e0b8ae;
+  color: var(--danger);
+}
+
+/* ── edit modal ── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(30, 20, 12, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fade-up 160ms ease;
+}
+
+.modal-overlay[hidden] {
+  display: none;
+}
+
+.modal {
+  width: min(600px, 92vw);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(40, 24, 9, 0.18);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.modal-close-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.modal-close-btn:hover {
+  background: #f1e2cf;
+}
+
+.modal-body {
+  padding: 14px 16px;
+  overflow-y: auto;
+  display: grid;
+  gap: 10px;
+  flex: 1;
+}
+
+.modal-label {
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.edit-id-input {
+  background: #f5efe6 !important;
+  color: var(--muted) !important;
+  cursor: default;
+}
+
+.modal-body textarea {
+  font-family: "SF Mono", "Menlo", "IBM Plex Mono", monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--line);
+}
+
+/* ── delete popover ── */
+.delete-popover {
+  position: fixed;
+  z-index: 110;
+  min-width: 220px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(40, 24, 9, 0.18);
+  animation: fade-up 140ms ease;
+}
+
+.delete-popover[hidden] {
+  display: none;
+}
+
+.delete-popover-body {
+  padding: 12px 14px 8px;
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+.delete-popover-body p {
+  margin: 0 0 6px;
+}
+
+.delete-popover-id {
+  margin: 0;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: #f5efe6;
+  font-family: "SF Mono", "Menlo", "IBM Plex Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 80px;
+  overflow: auto;
+}
+
+.delete-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 8px 14px 12px;
+}
+
 @keyframes fade-up {
   from {
     opacity: 0;
@@ -1240,27 +1431,40 @@ button.danger {
 
 @media (max-width: 1060px) {
   .layout {
-    width: min(1380px, calc(100vw - 18px));
-    margin: 12px auto 16px;
     grid-template-columns: 1fr;
-    gap: 12px;
+    gap: 0;
+    min-height: auto;
   }
 
-  .side-panel,
+  .panel {
+    border-radius: 0;
+  }
+
+  .side-panel {
+    padding: 0;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+  }
+
   .main-panel {
-    padding: 12px;
+    padding: 0;
   }
 
   .block {
-    padding: 10px;
+    border-radius: 0;
+  }
+
+  .sidebar-toolbar {
+    padding: 10px 12px;
   }
 
   .operation-tabbar {
-    margin-bottom: 10px;
-    padding-bottom: 8px;
+    margin-bottom: 0;
+    padding: 0 12px;
     flex-wrap: nowrap;
     overflow-x: auto;
     scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
   }
 
   .operation-tabbar .tab {
@@ -1294,73 +1498,48 @@ button.danger {
     transform: none;
   }
 
-  .side-panel {
-    border-right: none;
-    border-bottom: 1px solid var(--line);
+  .main-topbar {
+    padding: 8px 12px;
+  }
+
+  .tab-content {
+    padding: 10px 12px;
+  }
+
+  .main-collapse-btn {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
   }
 }
 
 @media (max-width: 760px) {
-  .bg-shape {
-    opacity: 0.32;
-    filter: blur(20px);
-  }
-
-  .shape-a {
-    width: 200px;
-    height: 200px;
-    right: -36px;
-    top: 22px;
-  }
-
-  .shape-b {
-    width: 240px;
-    height: 240px;
-    left: -110px;
-    bottom: -120px;
-  }
-
   .layout {
-    width: min(1380px, calc(100vw - 12px));
-    margin: 8px auto 12px;
-    gap: 10px;
+    gap: 0;
   }
 
-  .panel {
-    border-radius: 12px;
-  }
-
-  .side-panel,
-  .main-panel {
-    padding: 10px;
-  }
-
-  .sidebar-toolbar {
-    margin-bottom: 6px;
+  .connect-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
   }
 
   .query-input-switch {
-    width: auto;
-    flex: 1 1 220px;
+    flex: 1 1 100%;
     justify-content: space-between;
-    padding: 3px;
+    padding: 2px;
   }
 
   .query-mode-btn {
     flex: 1;
-    padding: 6px 10px;
-    font-size: 0.78rem;
+    padding: 5px 8px;
+    font-size: 0.76rem;
   }
 
   .main-topbar {
     flex-wrap: wrap;
     align-items: center;
-    row-gap: 8px;
-  }
-
-  .main-topbar .query-input-switch {
-    margin-bottom: 0;
-    min-width: 0;
+    row-gap: 6px;
+    padding: 6px 10px;
   }
 
   .main-topbar .status-chip {
@@ -1368,8 +1547,8 @@ button.danger {
   }
 
   .status-chip {
-    padding: 6px 10px;
-    font-size: 0.8rem;
+    padding: 3px 8px;
+    font-size: 0.72rem;
   }
 
   .query-builder-card {
@@ -1378,7 +1557,7 @@ button.danger {
 
   #builderCornerHost {
     position: static;
-    margin: 6px 8px 0;
+    margin: 6px 0 0;
   }
 
   #terminalCornerHost {
@@ -1389,27 +1568,30 @@ button.danger {
     width: 100%;
     flex-wrap: wrap;
     justify-content: flex-end;
+    gap: 4px;
   }
 
   .corner-select {
-    min-width: 96px;
+    min-width: 88px;
     flex: 1;
   }
 
   .corner-export-btn {
-    min-width: 60px;
+    min-width: 52px;
   }
 
   .terminal-head {
     grid-template-columns: 1fr;
     align-items: stretch;
     gap: 6px;
+    padding: 6px 8px;
   }
 
   .terminal-head-actions {
     width: 100%;
     justify-content: flex-end;
     flex-wrap: wrap;
+    gap: 4px;
   }
 
   #terminalCornerHost .query-corner-controls {
@@ -1420,6 +1602,8 @@ button.danger {
   .terminal-input-row {
     grid-template-columns: 1fr;
     align-items: stretch;
+    gap: 6px;
+    padding: 6px 8px;
   }
 
   .terminal-prompt {
@@ -1427,52 +1611,77 @@ button.danger {
   }
 
   .terminal-output {
-    min-height: 108px;
-    max-height: 180px;
+    min-height: 80px;
+    max-height: 160px;
   }
 
   .query-toolbar {
     justify-content: flex-start;
-    padding: 8px;
+    padding: 6px;
+    gap: 4px;
   }
 
   .grid-2 {
     grid-template-columns: 1fr;
-  }
-
-  .combo-picker {
-    grid-template-columns: 1fr;
-  }
-
-  .combo-apply-btn {
-    min-width: 0;
-    width: 100%;
+    gap: 6px;
   }
 
   .results {
-    min-height: 180px;
-    max-height: 56vh;
-    padding: 8px;
+    min-height: 120px;
+    max-height: 50vh;
   }
 
   .result-table th,
   .result-table td {
-    padding: 6px 7px;
-    font-size: 0.8rem;
+    padding: 4px 6px;
+    font-size: 0.72rem;
   }
 
   .result-table th:first-child,
   .result-table td:first-child {
-    width: 96px;
-    max-width: 96px;
+    width: 80px;
+    max-width: 80px;
   }
 
   .card-grid {
     grid-template-columns: 1fr;
-    gap: 8px;
+    gap: 6px;
+    padding: 6px;
   }
 
   .tab-content {
-    padding: 10px 12px;
+    padding: 8px 10px;
+  }
+
+  .modal {
+    width: calc(100vw - 16px);
+    max-height: 90vh;
+    border-radius: 8px;
+  }
+
+  .tree-db {
+    padding: 6px 8px;
+    font-size: 0.78rem;
+  }
+
+  .tree-collection {
+    padding: 4px 8px;
+    font-size: 0.72rem;
+  }
+
+  .row-action-btn {
+    width: 28px;
+    height: 28px;
+  }
+
+  .row-action-btn svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .delete-popover {
+    min-width: 180px;
+    left: 10px !important;
+    right: 10px !important;
   }
 }
