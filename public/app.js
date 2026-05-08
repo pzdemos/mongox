@@ -136,6 +136,15 @@ function formatDateForDisplay(date) {
   return `${y}-${m}-${d} ${h}:${min}:${sec}`;
 }
 
+function parseEjsonNumber(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if ("$numberInt" in value) return Number(value.$numberInt);
+  if ("$numberLong" in value) return Number(value.$numberLong);
+  if ("$numberDouble" in value) return Number(value.$numberDouble);
+  if ("$numberDecimal" in value) return value.$numberDecimal;
+  return undefined;
+}
+
 function toDisplayValue(value) {
   if (Array.isArray(value)) {
     return value.map((item) => toDisplayValue(item));
@@ -144,6 +153,11 @@ function toDisplayValue(value) {
   const asDate = parseEjsonDate(value);
   if (asDate) {
     return formatDateForDisplay(asDate);
+  }
+
+  const asNumber = parseEjsonNumber(value);
+  if (asNumber !== undefined) {
+    return asNumber;
   }
 
   if (value && typeof value === "object") {
@@ -1245,6 +1259,8 @@ class CanvasTable {
     this._dirty = false;
     this._destroyed = false;
     this._bound = {};
+    this._newRow = null;       // pending new row doc object, null = no new row
+    this._addBtnRect = null;   // "+" button hit area {x, y, w, h} in canvas coords
 
     this._computeCols();
     this._bindEvents();
@@ -1303,6 +1319,64 @@ class CanvasTable {
     this.maxScrollY = Math.max(0, totalHeight - this.height);
     this.scrollX = Math.min(this.scrollX, this.maxScrollX);
     this.scrollY = Math.min(this.scrollY, this.maxScrollY);
+  }
+
+  _isNewRow(row) {
+    return this._newRow !== null && row >= 0 && row < this.docs.length && this.docs[row] === this._newRow;
+  }
+
+  _startNewRow() {
+    if (this._newRow) return; // already adding
+    const emptyDoc = { _id: null };
+    this.docs.push(emptyDoc);
+    this.displayDocs.push({ _id: "new" });
+    this._newRow = emptyDoc;
+    this._updateScrollBounds();
+    // Scroll to bottom
+    this.scrollY = this.maxScrollY;
+    this.scheduleRender();
+  }
+
+  async _commitNewRow() {
+    if (!this._newRow) return;
+    if (this.editingCell) this._commitInlineEdit();
+    const doc = { ...this._newRow };
+    delete doc._id;
+    const cleanDoc = {};
+    for (const [k, v] of Object.entries(doc)) {
+      if (v !== undefined && v !== null && v !== "") cleanDoc[k] = v;
+    }
+    if (Object.keys(cleanDoc).length === 0) {
+      showToast("文档不能为空", true);
+      return;
+    }
+    try {
+      const data = await api(`${API_BASE}/api/insert`, {
+        method: "POST",
+        body: JSON.stringify({ doc: JSON.stringify(cleanDoc) }),
+      });
+      this._newRow._id = data.insertedId;
+      const idx = this.docs.indexOf(this._newRow);
+      if (idx >= 0) this.displayDocs[idx]._id = data.insertedId;
+      this._newRow = null;
+      showToast("插入成功");
+      this.scheduleRender();
+    } catch (error) {
+      showToast(`插入失败: ${error.message}`, true);
+    }
+  }
+
+  _cancelNewRow() {
+    if (!this._newRow) return;
+    if (this.editingCell) this.cancelEdit();
+    const idx = this.docs.indexOf(this._newRow);
+    if (idx >= 0) {
+      this.docs.splice(idx, 1);
+      this.displayDocs.splice(idx, 1);
+    }
+    this._newRow = null;
+    this._updateScrollBounds();
+    this.scheduleRender();
   }
 
   _bindEvents() {
@@ -1428,12 +1502,17 @@ class CanvasTable {
     for (let i = 0; i < this.cols.length; i++) {
       const col = this.cols[i];
       if (x + col.width > 0 && x < this.width) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(Math.max(0, x), 0, col.width, hh);
-        ctx.clip();
-        ctx.fillText(col.label, x + 8, hh / 2);
-        ctx.restore();
+        if (col.key === "__action__") {
+          // Draw "+" add button
+          this._drawAddBtn(x, 0, col.width, hh);
+        } else {
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(Math.max(0, x), 0, col.width, hh);
+          ctx.clip();
+          ctx.fillText(col.label, x + 8, hh / 2);
+          ctx.restore();
+        }
       }
       x += col.width;
     }
@@ -1465,7 +1544,11 @@ class CanvasTable {
       const isOdd = r % 2 === 1;
 
       // Row background
-      ctx.fillStyle = isOdd ? CT_COLORS.cellBgOdd : CT_COLORS.cellBgEven;
+      if (this._isNewRow(r)) {
+        ctx.fillStyle = "#effaf3";
+      } else {
+        ctx.fillStyle = isOdd ? CT_COLORS.cellBgOdd : CT_COLORS.cellBgEven;
+      }
       ctx.fillRect(0, ry, this.width, rh);
 
       // Hover highlight
@@ -1525,7 +1608,49 @@ class CanvasTable {
     ctx.clip();
 
     if (this._isActionCol(col)) {
-      this._drawDeleteIcon(x + w / 2, y + h / 2);
+      if (this._isNewRow(row)) {
+        // Draw ✓ / ✗ split
+        const halfW = w / 2;
+        this._drawConfirmIcon(x + halfW / 2, y + h / 2);
+        this._drawCancelIcon(x + halfW + halfW / 2, y + h / 2);
+      } else {
+        this._drawDeleteIcon(x + w / 2, y + h / 2);
+      }
+      ctx.restore();
+      return;
+    }
+
+    // New row _id column: show "new" badge
+    if (this._isNewRow(row) && this._isIdCol(col)) {
+      ctx.font = `${CT_DEFAULTS.fontSize - 1}px "SF Mono", Menlo, "IBM Plex Mono", monospace`;
+      ctx.textBaseline = "middle";
+      const label = "new";
+      const bx = x + 4;
+      const by = y + (h - 18) / 2;
+      const badgeW = ctx.measureText(label).width + 12;
+      const badgeRW = Math.min(badgeW, w - 8);
+      const badgeRH = 18;
+      const badgeR = 3;
+
+      ctx.fillStyle = "#ddf5ee";
+      ctx.strokeStyle = "#a3dfc4";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(bx + badgeR, by);
+      ctx.lineTo(bx + badgeRW - badgeR, by);
+      ctx.quadraticCurveTo(bx + badgeRW, by, bx + badgeRW, by + badgeR);
+      ctx.lineTo(bx + badgeRW, by + badgeRH - badgeR);
+      ctx.quadraticCurveTo(bx + badgeRW, by + badgeRH, bx + badgeRW - badgeR, by + badgeRH);
+      ctx.lineTo(bx + badgeR, by + badgeRH);
+      ctx.quadraticCurveTo(bx, by + badgeRH, bx, by + badgeRH - badgeR);
+      ctx.lineTo(bx, by + badgeR);
+      ctx.quadraticCurveTo(bx, by, bx + badgeR, by);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = "#0e8c6a";
+      ctx.fillText(label, bx + 6, by + 9);
       ctx.restore();
       return;
     }
@@ -1629,6 +1754,87 @@ class CanvasTable {
     ctx.restore();
   }
 
+  _drawAddBtn(x, y, w, h) {
+    const ctx = this.ctx;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const r = 9;
+    // Record hit area (canvas coords, not scrolled since header is fixed)
+    this._addBtnRect = { x: cx - r, y: cy - r, w: r * 2, h: r * 2 };
+    ctx.save();
+    // Green circle
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = "#e6f5ef";
+    ctx.strokeStyle = "#0e8c6a";
+    ctx.lineWidth = 1.2;
+    ctx.fill();
+    ctx.stroke();
+    // "+" cross
+    ctx.strokeStyle = "#0e8c6a";
+    ctx.lineWidth = 1.6;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - 4, cy);
+    ctx.lineTo(cx + 4, cy);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 4);
+    ctx.lineTo(cx, cy + 4);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  _drawConfirmIcon(cx, cy) {
+    const ctx = this.ctx;
+    const r = 9;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = "#e6f5ef";
+    ctx.strokeStyle = "#0e8c6a";
+    ctx.lineWidth = 1.2;
+    ctx.fill();
+    ctx.stroke();
+    // Check mark
+    ctx.strokeStyle = "#0e8c6a";
+    ctx.lineWidth = 1.8;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - 4, cy);
+    ctx.lineTo(cx - 1, cy + 3);
+    ctx.lineTo(cx + 5, cy - 3);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  _drawCancelIcon(cx, cy) {
+    const ctx = this.ctx;
+    const r = 9;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = "#f5ece6";
+    ctx.strokeStyle = "#9a8574";
+    ctx.lineWidth = 1.2;
+    ctx.fill();
+    ctx.stroke();
+    // X mark
+    ctx.strokeStyle = "#9a8574";
+    ctx.lineWidth = 1.6;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(cx - 3.5, cy - 3.5);
+    ctx.lineTo(cx + 3.5, cy + 3.5);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + 3.5, cy - 3.5);
+    ctx.lineTo(cx - 3.5, cy + 3.5);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   _handleClick(e) {
     const pos = this._getMousePos(e);
     const cell = this._hitTest(pos.x, pos.y);
@@ -1637,16 +1843,49 @@ class CanvasTable {
       return;
     }
 
-    // Close any active editor first
-    if (this.editingCell) {
-      this.cancelEdit();
+    // Header click: check "+" add button
+    if (cell.row < 0) {
+      if (this._addBtnRect) {
+        const r = this._addBtnRect;
+        if (pos.x >= r.x && pos.x <= r.x + r.w && pos.y >= r.y && pos.y <= r.y + r.h) {
+          this._startNewRow();
+        }
+      }
+      return;
     }
 
-    if (cell.row < 0) return;
+    // Close any active editor first
+    if (this.editingCell) {
+      if (this._isNewRow(this.editingCell.row)) {
+        this._commitInlineEdit();
+      } else {
+        this.cancelEdit();
+      }
+    }
+
+    // New row action column: ✓ / ✗
+    if (this._isActionCol(cell.col) && this._isNewRow(cell.row)) {
+      const colX = this._cellRect(cell.row, cell.col).x;
+      const halfW = this.cols[cell.col].width / 2;
+      if (pos.x < colX + halfW) {
+        void this._commitNewRow();
+      } else {
+        this._cancelNewRow();
+      }
+      return;
+    }
 
     if (this._isActionCol(cell.col)) {
       const doc = this.docs[cell.row];
       if (doc) this.onDelete(doc);
+      return;
+    }
+
+    // New row cells: click to edit directly
+    if (this._isNewRow(cell.row)) {
+      this.selectedCell = cell;
+      this.scheduleRender();
+      this._startEdit(cell.row, cell.col);
       return;
     }
 
@@ -1662,7 +1901,9 @@ class CanvasTable {
     const pos = this._getMousePos(e);
     const cell = this._hitTest(pos.x, pos.y);
     if (!cell || cell.row < 0) return;
-    if (this._isIdCol(cell.col) || this._isActionCol(cell.col)) return;
+    if (this._isActionCol(cell.col)) return;
+    // New row: all columns editable (including _id)
+    if (!this._isNewRow(cell.row) && this._isIdCol(cell.col)) return;
     this._closePreview();
     this._startEdit(cell.row, cell.col);
   }
@@ -1681,10 +1922,20 @@ class CanvasTable {
     }
 
     if (pos.y < CT_DEFAULTS.headerHeight) {
+      // Check "+" button hit area
+      if (this._addBtnRect) {
+        const r = this._addBtnRect;
+        if (pos.x >= r.x && pos.x <= r.x + r.w && pos.y >= r.y && pos.y <= r.y + r.h) {
+          this.canvas.style.cursor = "pointer";
+          return;
+        }
+      }
       const boundary = this._colBoundary(pos.x + this.scrollX);
       this.canvas.style.cursor = boundary >= 0 ? "col-resize" : "default";
     } else if (cell && this._isActionCol(cell.col)) {
       this.canvas.style.cursor = "pointer";
+    } else if (cell && this._isNewRow(cell.row)) {
+      this.canvas.style.cursor = "text";
     } else if (cell && !this._isIdCol(cell.col)) {
       this.canvas.style.cursor = "text";
     } else {
@@ -1765,7 +2016,19 @@ class CanvasTable {
     const cell = this._hitTest(pos.x, pos.y);
     if (!cell || cell.row < 0) return;
 
-    if (this.editingCell) this.cancelEdit();
+    if (this.editingCell) this._commitInlineEdit();
+
+    // New row action column: ✓ / ✗
+    if (this._isActionCol(cell.col) && this._isNewRow(cell.row)) {
+      const colX = this._cellRect(cell.row, cell.col).x;
+      const halfW = this.cols[cell.col].width / 2;
+      if (pos.x < colX + halfW) {
+        void this._commitNewRow();
+      } else {
+        this._cancelNewRow();
+      }
+      return;
+    }
 
     // Single tap on mobile: select + edit directly
     if (this._isActionCol(cell.col)) {
@@ -1777,7 +2040,8 @@ class CanvasTable {
     this.selectedCell = cell;
     this.scheduleRender();
 
-    if (!this._isIdCol(cell.col)) {
+    // New row or mobile: all columns editable
+    if (this._isNewRow(cell.row) || !this._isIdCol(cell.col)) {
       this._startEdit(cell.row, cell.col);
     }
   }
@@ -1797,8 +2061,7 @@ class CanvasTable {
   }
 
   _valueToEditString(value) {
-    if (value === null) return "null";
-    if (value === undefined) return "";
+    if (value === null || value === undefined) return "";
     if (typeof value === "string") return value;
     return JSON.stringify(value, null, 2);
   }
@@ -1812,14 +2075,33 @@ class CanvasTable {
     if (!doc) return;
     const rawValue = doc[key];
     const isComplex = this._isComplexValue(rawValue);
+    const isNew = this._isNewRow(row);
     const rect = this._cellRect(row, col);
     const canvasRect = this.canvas.getBoundingClientRect();
 
+    // Calculate editor position, clamped within viewport
+    let editorLeft = canvasRect.left + rect.x;
+    let editorTop = canvasRect.top + rect.y;
+    let editorWidth = rect.w;
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+
+    // Clamp left so editor doesn't overflow right edge
+    if (editorLeft + editorWidth > viewportW - 8) {
+      editorLeft = Math.max(8, viewportW - editorWidth - 8);
+    }
+    // Estimate editor height: input + bar (save/cancel) for normal rows
+    const barH = isNew ? 0 : 30;
+    const estimatedH = (isComplex ? CT_DEFAULTS.rowHeight * 4 : CT_DEFAULTS.rowHeight) + barH;
+    if (editorTop + estimatedH > viewportH - 8) {
+      editorTop = Math.max(8, viewportH - estimatedH - 8);
+    }
+
     const el = document.createElement("div");
-    el.className = "ct-editor";
-    el.style.left = `${canvasRect.left + rect.x}px`;
-    el.style.top = `${canvasRect.top + rect.y}px`;
-    el.style.width = `${rect.w}px`;
+    el.className = isNew ? "ct-editor ct-editor-inline" : "ct-editor";
+    el.style.left = `${editorLeft}px`;
+    el.style.top = `${editorTop}px`;
+    el.style.width = `${editorWidth}px`;
 
     const input = document.createElement(isComplex ? "textarea" : "input");
     input.className = "ct-editor-input";
@@ -1829,46 +2111,110 @@ class CanvasTable {
       el.style.minHeight = `${CT_DEFAULTS.rowHeight * 4}px`;
     }
 
-    // Save/Cancel button bar
-    const bar = document.createElement("div");
-    bar.className = "ct-editor-bar";
+    if (isNew) {
+      // Inline mode for new row: no save/cancel bar, just the input
+      el.appendChild(input);
+      document.body.appendChild(el);
+      input.focus();
+      if (!isComplex) input.select();
 
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.className = "ct-editor-save";
-    saveBtn.textContent = "保存";
-    saveBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      void this.commitEdit();
-    });
+      this.editingCell = { row, col, inputEl: input, wrapperEl: el };
 
-    const cancelBtn = document.createElement("button");
-    cancelBtn.type = "button";
-    cancelBtn.className = "ct-editor-cancel";
-    cancelBtn.textContent = "取消";
-    cancelBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      this.cancelEdit();
-    });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          this._commitInlineEdit();
+          this._cancelNewRow();
+        } else if (e.key === "Tab" || e.key === "Enter") {
+          e.preventDefault();
+          this._commitInlineEdit();
+          // Move to next editable cell
+          const nextCol = this._findNextEditableCol(row, col, e.shiftKey ? -1 : 1);
+          if (nextCol >= 0) {
+            this._startEdit(row, nextCol);
+          }
+        }
+      });
 
-    bar.appendChild(saveBtn);
-    bar.appendChild(cancelBtn);
-    el.appendChild(input);
-    el.appendChild(bar);
-    document.body.appendChild(el);
-    input.focus();
-    if (!isComplex) input.select();
+      input.addEventListener("blur", (e) => {
+        // Only commit if focus is leaving to a non-editor element
+        if (!el.contains(e.relatedTarget)) {
+          this._commitInlineEdit();
+        }
+      });
+    } else {
+      // Normal mode: save/cancel button bar
+      const bar = document.createElement("div");
+      bar.className = "ct-editor-bar";
 
-    this.editingCell = { row, col, inputEl: input, wrapperEl: el };
-
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
+      const saveBtn = document.createElement("button");
+      saveBtn.type = "button";
+      saveBtn.className = "ct-editor-save";
+      saveBtn.textContent = "保存";
+      saveBtn.addEventListener("click", (e) => {
         e.preventDefault();
+        e.stopPropagation();
+        void this.commitEdit();
+      });
+
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "ct-editor-cancel";
+      cancelBtn.textContent = "取消";
+      cancelBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         this.cancelEdit();
+      });
+
+      bar.appendChild(saveBtn);
+      bar.appendChild(cancelBtn);
+      el.appendChild(input);
+      el.appendChild(bar);
+      document.body.appendChild(el);
+      input.focus();
+      if (!isComplex) input.select();
+
+      this.editingCell = { row, col, inputEl: input, wrapperEl: el };
+
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          this.cancelEdit();
+        }
+      });
+    }
+  }
+
+  _commitInlineEdit() {
+    if (!this.editingCell) return;
+    const { row, col, inputEl, wrapperEl } = this.editingCell;
+    const key = this.cols[col].key;
+    const doc = this.docs[row];
+    const originalValue = doc[key];
+    const editValue = inputEl.value;
+
+    const newValue = parseEditedValue(editValue, originalValue);
+    this.editingCell = null;
+    if (wrapperEl && wrapperEl.isConnected) wrapperEl.remove();
+
+    if (JSON.stringify(originalValue) === JSON.stringify(newValue)) return;
+
+    // Update local data only
+    doc[key] = newValue;
+    this.displayDocs[row][key] = toDisplayValue(newValue);
+    this.scheduleRender();
+  }
+
+  _findNextEditableCol(row, currentCol, direction) {
+    let next = currentCol + direction;
+    while (next >= 0 && next < this.cols.length) {
+      if (!this._isActionCol(next) && !this._isIdCol(next)) {
+        return next;
       }
-    });
+      next += direction;
+    }
+    return -1;
   }
 
   async commitEdit() {
@@ -1987,6 +2333,7 @@ class CanvasTable {
   destroy() {
     this._destroyed = true;
     if (this._rafId) cancelAnimationFrame(this._rafId);
+    this._cancelNewRow();
     this.cancelEdit();
     this._closePreview();
     const b = this._bound;

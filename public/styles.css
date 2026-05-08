@@ -1100,6 +1100,13 @@ button.danger {
   flex-direction: column;
 }
 
+.ct-editor-inline {
+  border-color: #0e8c6a;
+  background: #f0faf5;
+  box-shadow: 0 1px 4px rgba(14, 140, 106, 0.15);
+  min-height: 26px;
+}
+
 .ct-editor input,
 .ct-editor textarea {
   width: 100%;
