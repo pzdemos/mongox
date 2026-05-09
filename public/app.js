@@ -72,6 +72,48 @@ function draftMatchesConnection(connection = editingConnection()) {
   return draft.name === (connection.name || "") && draft.uri === (connection.uri || "");
 }
 
+function findSavedConnectionByUri(uri) {
+  const normalized = String(uri || "").trim();
+  if (!normalized) {
+    return null;
+  }
+  return state.connections.find((item) => item.uri === normalized) || null;
+}
+
+function getDraftContext() {
+  const draft = readConnectionDraft();
+  const editing = editingConnection();
+  const activeId = activeConnectionId();
+  const active = findSavedConnection(activeId);
+
+  let boundConnection = null;
+  if (editing && draft.uri === (editing.uri || "")) {
+    boundConnection = editing;
+  } else {
+    boundConnection = findSavedConnectionByUri(draft.uri);
+  }
+
+  const exactMatch = Boolean(
+    boundConnection &&
+      draft.uri === (boundConnection.uri || "") &&
+      draft.name === (boundConnection.name || ""),
+  );
+  const affectsActive = Boolean(boundConnection?.id && boundConnection.id === activeId);
+  const canDisconnectActive = Boolean(state.status?.connected && affectsActive && exactMatch);
+  const isNewDraft = Boolean(draft.uri) && !boundConnection;
+
+  return {
+    draft,
+    editing,
+    active,
+    boundConnection,
+    exactMatch,
+    affectsActive,
+    canDisconnectActive,
+    isNewDraft,
+  };
+}
+
 function showToast(message, isError = false) {
   const toast = $("toast");
   toast.textContent = message;
@@ -456,13 +498,14 @@ function renderConnectionList() {
   }
 
   const activeId = activeConnectionId();
+  const draftBindingId = getDraftContext().boundConnection?.id || null;
   state.connections.forEach((connection) => {
     const item = document.createElement("article");
     item.className = "connection-item";
     if (connection.id === activeId) {
       item.classList.add("active");
     }
-    if (connection.id === state.editingConnectionId) {
+    if (connection.id === draftBindingId) {
       item.classList.add("editing");
     }
 
@@ -700,15 +743,25 @@ function renderStatusChip(status) {
     return;
   }
 
+  const draftContext = getDraftContext();
+
   if (state.connecting) {
-    chip.textContent = "连接中...";
+    chip.textContent = draftContext.canDisconnectActive ? "断开中..." : "连接中...";
     chip.classList.remove("connected");
     chip.classList.add("connecting");
     return;
   }
 
   chip.classList.remove("connecting");
-  if (status.connected) {
+  if (!draftContext.canDisconnectActive && draftContext.draft.uri) {
+    if (draftContext.isNewDraft) {
+      chip.textContent = "新连接草稿 · 未连接";
+    } else if (draftContext.boundConnection) {
+      chip.textContent = `待连接: ${draftContext.boundConnection.name || "已有配置"}`;
+    } else {
+      chip.textContent = "未连接";
+    }
+  } else if (status.connected) {
     chip.textContent = `${status.connectionName || "当前连接"} · ${
       status.dbName || "(未选库)"
     } / ${status.collectionName || "(未选集合)"}`;
@@ -742,6 +795,8 @@ function updateConnectToggle(status) {
     return;
   }
 
+  const draftContext = getDraftContext();
+
   if (state.connecting) {
     button.disabled = true;
     button.classList.remove("is-connected");
@@ -771,13 +826,23 @@ function updateConnectToggle(status) {
     return;
   }
 
-  const isConnected = Boolean(status?.connected);
+  const isConnected = draftContext.canDisconnectActive;
   const icon = connectToggleIconPath(isConnected);
   button.disabled = false;
   button.classList.remove("is-connecting");
   button.classList.toggle("is-connected", isConnected);
-  button.setAttribute("aria-label", isConnected ? "断开连接" : "连接数据库");
-  button.title = isConnected ? "断开连接" : "连接数据库";
+  let nextLabel = "连接数据库";
+  if (isConnected) {
+    nextLabel = "断开当前连接";
+  } else if (draftContext.isNewDraft) {
+    nextLabel = "创建并连接新配置";
+  } else if (draftContext.boundConnection && !draftContext.affectsActive) {
+    nextLabel = "切换并连接此配置";
+  } else if (draftContext.boundConnection) {
+    nextLabel = "连接当前配置";
+  }
+  button.setAttribute("aria-label", nextLabel);
+  button.title = nextLabel;
   button.innerHTML = `
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path
@@ -2747,20 +2812,20 @@ function renderResults() {
 }
 
 async function saveConnectionDraft({ quiet = false } = {}) {
-  const draft = readConnectionDraft();
+  const draftContext = getDraftContext();
+  const { draft } = draftContext;
   if (!draft.uri) {
     throw new Error("连接字符串不能为空");
   }
 
-  const editing = editingConnection();
   const shouldUpdateExisting = Boolean(
-    editing && draft.uri === (editing.uri || ""),
+    draftContext.boundConnection && draft.uri === (draftContext.boundConnection.uri || ""),
   );
 
   const data = await api(`${API_BASE}/api/connections`, {
     method: "POST",
     body: JSON.stringify({
-      id: shouldUpdateExisting ? state.editingConnectionId : undefined,
+      id: shouldUpdateExisting ? draftContext.boundConnection.id : undefined,
       name: draft.name,
       uri: draft.uri,
     }),
@@ -2848,6 +2913,8 @@ async function handleNewConnectionDraft() {
   state.editingConnectionId = null;
   clearConnectionDraft();
   renderConnectionList();
+  renderStatusChip(state.status || { connected: false, dbName: "", collectionName: "" });
+  updateConnectToggle(state.status);
 }
 
 function readQueryPayload() {
@@ -2889,11 +2956,9 @@ async function handleDisconnect() {
 }
 
 async function handleConnectToggle() {
-  const activeId = activeConnectionId();
-  const editingId = state.editingConnectionId;
-  const editingIsActive = Boolean(editingId && activeId && editingId === activeId);
+  const draftContext = getDraftContext();
 
-  if (state.status?.connected && editingIsActive && draftMatchesConnection()) {
+  if (draftContext.canDisconnectActive) {
     await handleDisconnect();
     return;
   }
@@ -3071,6 +3136,13 @@ function bindEvents() {
   $("saveConnectionBtn").addEventListener("click", wrap(() => saveConnectionDraft()));
   $("newConnectionBtn").addEventListener("click", () => {
     void handleNewConnectionDraft();
+  });
+  ["connectionNameInput", "uriInput"].forEach((id) => {
+    $(id).addEventListener("input", () => {
+      renderConnectionList();
+      renderStatusChip(state.status || { connected: false, dbName: "", collectionName: "" });
+      updateConnectToggle(state.status);
+    });
   });
   $("sidebarToggleBtn").addEventListener("click", () => {
     const next = !document.body.classList.contains("sidebar-collapsed");
