@@ -69,6 +69,11 @@ h2 {
   margin: 0;
 }
 
+.block-meta {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 .icon-toggle-btn {
   width: 26px;
   height: 26px;
@@ -646,6 +651,102 @@ body.sidebar-collapsed .main-collapse-btn svg {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
   align-items: center;
+}
+
+.connect-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+}
+
+.connect-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.connection-list {
+  display: grid;
+  gap: 8px;
+}
+
+.connection-item {
+  border: 1px solid #e4d5c3;
+  background: #fffaf3;
+  border-radius: 8px;
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    transform 140ms ease;
+}
+
+.connection-item:hover {
+  border-color: #d1bfa8;
+  background: #fff6eb;
+}
+
+.connection-item.active {
+  border-color: #c5ab84;
+  background: #f8eee1;
+}
+
+.connection-item.editing {
+  box-shadow: inset 0 0 0 1px #8f6e47;
+}
+
+.connection-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.connection-item-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-item-uri,
+.connection-item-meta {
+  font-size: 0.74rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.connection-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.connection-item-actions button {
+  padding: 4px 10px;
+  font-size: 0.76rem;
+}
+
+.connection-badge {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: #ece2d5;
+  color: #6e5a47;
+}
+
+.connection-badge.connected {
+  background: #ddf5ee;
+  color: var(--brand-2);
 }
 
 .tree-block {

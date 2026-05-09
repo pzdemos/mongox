@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
+import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import yaml from "js-yaml";
@@ -14,20 +16,27 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(__dirname, "..", "public")));
+
 const API_PREFIX = "/mongo/api";
 const apiPath = (pathName) => `${API_PREFIX}${pathName}`;
+const COOKIE_NAME = "mongox_client_id";
+const COOKIE_MAX_AGE = 1000 * 60 * 60 * 24 * 365;
+const DATA_DIR = path.join(__dirname, "..", "data");
+const STORE_FILE = path.join(DATA_DIR, "connections.json");
 
-const state = {
-  client: null,
-  uri: "",
-  dbName: "",
-  collectionName: "",
-};
+let persistentStore = { clients: {} };
+let persistQueue = Promise.resolve();
+const runtimeStore = new Map();
+const reconnectLocks = new Map();
 
 const asyncHandler =
   (fn) =>
   (req, res, next) =>
     Promise.resolve(fn(req, res, next)).catch(next);
+
+function nowIso() {
+  return new Date().toISOString();
+}
 
 function toTransport(value) {
   return JSON.parse(EJSON.stringify(value, { relaxed: false }));
@@ -59,32 +68,189 @@ function parseEjsonInput(input, fallback = undefined) {
   }
 }
 
-function assertConnected() {
-  if (!state.client) {
-    const error = new Error("MongoDB 未连接");
-    error.statusCode = 400;
-    throw error;
+function parseCookies(rawCookieHeader = "") {
+  return rawCookieHeader
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .reduce((acc, pair) => {
+      const index = pair.indexOf("=");
+      if (index < 0) {
+        return acc;
+      }
+      const key = pair.slice(0, index).trim();
+      const value = pair.slice(index + 1).trim();
+      if (!key) {
+        return acc;
+      }
+      try {
+        acc[key] = decodeURIComponent(value);
+      } catch {
+        acc[key] = value;
+      }
+      return acc;
+    }, {});
+}
+
+function serializeCookie(name, value, maxAge) {
+  return [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    `Max-Age=${Math.floor(maxAge / 1000)}`,
+    "HttpOnly",
+    "SameSite=Lax",
+  ].join("; ");
+}
+
+app.use((req, res, next) => {
+  const cookies = parseCookies(req.headers.cookie || "");
+  let clientId = cookies[COOKIE_NAME];
+  if (!clientId) {
+    clientId = crypto.randomUUID();
+    res.setHeader("Set-Cookie", serializeCookie(COOKIE_NAME, clientId, COOKIE_MAX_AGE));
+  }
+  req.clientId = clientId;
+  next();
+});
+
+function normalizeConnectionRecord(record = {}) {
+  return {
+    id: String(record.id || crypto.randomUUID()),
+    name: String(record.name || "").trim(),
+    uri: String(record.uri || "").trim(),
+    dbName: String(record.dbName || "").trim(),
+    collectionName: String(record.collectionName || "").trim(),
+    createdAt: String(record.createdAt || nowIso()),
+    updatedAt: String(record.updatedAt || nowIso()),
+    lastUsedAt: record.lastUsedAt ? String(record.lastUsedAt) : null,
+    lastConnectedAt: record.lastConnectedAt ? String(record.lastConnectedAt) : null,
+  };
+}
+
+function normalizeBucket(rawBucket = {}) {
+  return {
+    activeConnectionId: rawBucket.activeConnectionId ? String(rawBucket.activeConnectionId) : null,
+    connections: Array.isArray(rawBucket.connections)
+      ? rawBucket.connections.map((item) => normalizeConnectionRecord(item))
+      : [],
+  };
+}
+
+async function persistStore() {
+  const content = JSON.stringify(persistentStore, null, 2);
+  persistQueue = persistQueue.then(async () => {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+    const tmpFile = `${STORE_FILE}.tmp`;
+    await fs.writeFile(tmpFile, content, "utf8");
+    await fs.rename(tmpFile, STORE_FILE);
+  });
+  return persistQueue;
+}
+
+async function loadStore() {
+  await fs.mkdir(DATA_DIR, { recursive: true });
+  try {
+    const raw = await fs.readFile(STORE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    const clients = {};
+    Object.entries(parsed?.clients || {}).forEach(([clientId, bucket]) => {
+      clients[clientId] = normalizeBucket(bucket);
+    });
+    persistentStore = { clients };
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+    persistentStore = { clients: {} };
+    await persistStore();
   }
 }
 
-function assertDbSelected() {
-  assertConnected();
-  if (!state.dbName) {
-    const error = new Error("请先选择数据库");
-    error.statusCode = 400;
-    throw error;
+function getClientBucket(clientId) {
+  if (!persistentStore.clients[clientId]) {
+    persistentStore.clients[clientId] = normalizeBucket();
+  }
+  return persistentStore.clients[clientId];
+}
+
+function listConnections(bucket) {
+  return [...bucket.connections].sort((left, right) => {
+    const leftScore = left.lastUsedAt || left.updatedAt || left.createdAt;
+    const rightScore = right.lastUsedAt || right.updatedAt || right.createdAt;
+    return String(rightScore).localeCompare(String(leftScore));
+  });
+}
+
+function inferConnectionName(uri, fallback = "未命名连接") {
+  if (!uri) {
+    return fallback;
+  }
+  try {
+    const parsed = new URL(uri);
+    const host = parsed.host || parsed.hostname;
+    return host ? `Mongo @ ${host}` : fallback;
+  } catch {
+    return fallback;
   }
 }
 
-function getCollection() {
-  assertDbSelected();
-  if (!state.collectionName) {
-    const error = new Error("请先选择集合");
-    error.statusCode = 400;
-    throw error;
-  }
+function findConnection(bucket, connectionId) {
+  return bucket.connections.find((item) => item.id === connectionId) || null;
+}
 
-  return state.client.db(state.dbName).collection(state.collectionName);
+function removeConnection(bucket, connectionId) {
+  bucket.connections = bucket.connections.filter((item) => item.id !== connectionId);
+  if (bucket.activeConnectionId === connectionId) {
+    bucket.activeConnectionId = bucket.connections[0]?.id || null;
+  }
+}
+
+function runtimeBucket(clientId) {
+  if (!runtimeStore.has(clientId)) {
+    runtimeStore.set(clientId, new Map());
+  }
+  return runtimeStore.get(clientId);
+}
+
+function runtimeKey(clientId, connectionId) {
+  return `${clientId}:${connectionId}`;
+}
+
+function getRuntime(clientId, connectionId) {
+  return runtimeStore.get(clientId)?.get(connectionId) || null;
+}
+
+function setRuntime(clientId, connectionId, runtime) {
+  runtimeBucket(clientId).set(connectionId, runtime);
+}
+
+async function closeMongoClient(client) {
+  if (!client) {
+    return;
+  }
+  await client.close().catch(() => {});
+}
+
+async function disconnectRuntime(clientId, connectionId) {
+  const bucket = runtimeStore.get(clientId);
+  const runtime = bucket?.get(connectionId) || null;
+  if (bucket) {
+    bucket.delete(connectionId);
+    if (bucket.size === 0) {
+      runtimeStore.delete(clientId);
+    }
+  }
+  await closeMongoClient(runtime?.client);
+}
+
+async function disconnectAllRuntimes() {
+  const jobs = [];
+  runtimeStore.forEach((bucket, clientId) => {
+    bucket.forEach((_runtime, connectionId) => {
+      jobs.push(disconnectRuntime(clientId, connectionId));
+    });
+  });
+  await Promise.allSettled(jobs);
 }
 
 function maskMongoUri(uri) {
@@ -99,41 +265,6 @@ function maskMongoUri(uri) {
     return url.toString();
   } catch {
     return uri.replace(/(mongodb(\+srv)?:\/\/[^:@]+:)[^@]+(@)/, "$1****$3");
-  }
-}
-
-function getStatus() {
-  return {
-    connected: Boolean(state.client),
-    uri: maskMongoUri(state.uri),
-    dbName: state.dbName,
-    collectionName: state.collectionName,
-  };
-}
-
-function toCsv(docs) {
-  if (!docs.length) {
-    return "";
-  }
-
-  const keys = [...new Set(docs.flatMap((doc) => Object.keys(doc)))];
-  const esc = (value) => {
-    if (value === undefined) {
-      return "";
-    }
-    const text =
-      typeof value === "string" ? value : EJSON.stringify(value, { relaxed: false });
-    return `"${text.replaceAll('"', '""')}"`;
-  };
-
-  const lines = docs.map((doc) => keys.map((k) => esc(doc[k])).join(","));
-  return `${keys.join(",")}\n${lines.join("\n")}\n`;
-}
-
-async function closeCurrentClient() {
-  if (state.client) {
-    await state.client.close();
-    state.client = null;
   }
 }
 
@@ -274,6 +405,168 @@ async function connectWithAdaptiveRetry(uri) {
   throw lastError || new Error("连接失败");
 }
 
+async function pingRuntime(runtime) {
+  if (!runtime?.client) {
+    return false;
+  }
+
+  const now = Date.now();
+  if (runtime.lastPingAt && now - runtime.lastPingAt < 10000) {
+    return true;
+  }
+
+  try {
+    await runtime.client.db("admin").command({ ping: 1 });
+    runtime.lastPingAt = now;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureRuntimeConnected(clientId, connection, { persist = true } = {}) {
+  const current = getRuntime(clientId, connection.id);
+  if (await pingRuntime(current)) {
+    connection.lastUsedAt = nowIso();
+    if (persist) {
+      await persistStore();
+    }
+    return { runtime: current, adapted: false, reason: null };
+  }
+
+  const lockKey = runtimeKey(clientId, connection.id);
+  if (reconnectLocks.has(lockKey)) {
+    return reconnectLocks.get(lockKey);
+  }
+
+  const task = (async () => {
+    await disconnectRuntime(clientId, connection.id);
+    const connected = await connectWithAdaptiveRetry(connection.uri);
+    const runtime = { client: connected.client, lastPingAt: Date.now() };
+    setRuntime(clientId, connection.id, runtime);
+
+    if (connected.uri && connected.uri !== connection.uri) {
+      connection.uri = connected.uri;
+      connection.updatedAt = nowIso();
+    }
+
+    if (!connection.dbName) {
+      connection.dbName = connected.client.db().databaseName || "";
+    }
+
+    connection.lastConnectedAt = nowIso();
+    connection.lastUsedAt = connection.lastConnectedAt;
+    if (persist) {
+      await persistStore();
+    }
+
+    return {
+      runtime,
+      adapted: connected.adapted,
+      reason: connected.adapted ? connected.reason : null,
+    };
+  })();
+
+  reconnectLocks.set(lockKey, task);
+  try {
+    return await task;
+  } finally {
+    reconnectLocks.delete(lockKey);
+  }
+}
+
+function buildConnectionSummary(clientId, connection, bucket) {
+  const runtime = getRuntime(clientId, connection.id);
+  return {
+    id: connection.id,
+    name: connection.name,
+    uri: connection.uri,
+    uriMasked: maskMongoUri(connection.uri),
+    dbName: connection.dbName || "",
+    collectionName: connection.collectionName || "",
+    connected: Boolean(runtime?.client),
+    isActive: bucket.activeConnectionId === connection.id,
+    createdAt: connection.createdAt,
+    updatedAt: connection.updatedAt,
+    lastUsedAt: connection.lastUsedAt,
+    lastConnectedAt: connection.lastConnectedAt,
+  };
+}
+
+function buildStatus(clientId, bucket) {
+  const empty = {
+    connected: false,
+    activeConnectionId: bucket.activeConnectionId || null,
+    connectionName: "",
+    uri: "",
+    uriMasked: "",
+    dbName: "",
+    collectionName: "",
+  };
+
+  if (!bucket.activeConnectionId) {
+    return empty;
+  }
+
+  const active = findConnection(bucket, bucket.activeConnectionId);
+  if (!active) {
+    return empty;
+  }
+
+  const runtime = getRuntime(clientId, active.id);
+  return {
+    connected: Boolean(runtime?.client),
+    activeConnectionId: active.id,
+    connectionName: active.name,
+    uri: active.uri,
+    uriMasked: maskMongoUri(active.uri),
+    dbName: active.dbName || "",
+    collectionName: active.collectionName || "",
+  };
+}
+
+function requireActiveConnection(req) {
+  const bucket = getClientBucket(req.clientId);
+  if (!bucket.activeConnectionId) {
+    const error = new Error("请先选择连接配置");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const connection = findConnection(bucket, bucket.activeConnectionId);
+  if (!connection) {
+    bucket.activeConnectionId = null;
+    const error = new Error("当前连接配置不存在，请重新选择");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return { bucket, connection };
+}
+
+async function requireReadyContext(req, options = {}) {
+  const { bucket, connection } = requireActiveConnection(req);
+  const { runtime } = await ensureRuntimeConnected(req.clientId, connection);
+
+  if (options.requireDb && !connection.dbName) {
+    const error = new Error("请先选择数据库");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (options.requireCollection && !connection.collectionName) {
+    const error = new Error("请先选择集合");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  return { bucket, connection, runtime };
+}
+
+function getCollection(runtime, connection) {
+  return runtime.client.db(connection.dbName).collection(connection.collectionName);
+}
+
 function splitTopLevelArgs(raw) {
   const text = String(raw || "").trim();
   if (!text) {
@@ -288,8 +581,8 @@ function splitTopLevelArgs(raw) {
   let quote = "";
   let escaped = false;
 
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
     if (quote) {
       if (escaped) {
         escaped = false;
@@ -309,7 +602,6 @@ function splitTopLevelArgs(raw) {
       quote = char;
       continue;
     }
-
     if (char === "(") {
       depthParen += 1;
       continue;
@@ -336,8 +628,8 @@ function splitTopLevelArgs(raw) {
     }
 
     if (char === "," && depthParen === 0 && depthBracket === 0 && depthBrace === 0) {
-      args.push(text.slice(start, i).trim());
-      start = i + 1;
+      args.push(text.slice(start, index).trim());
+      start = index + 1;
     }
   }
 
@@ -354,8 +646,8 @@ function findMatchingParen(text, openIndex) {
   let quote = "";
   let escaped = false;
 
-  for (let i = openIndex; i < text.length; i += 1) {
-    const char = text[i];
+  for (let index = openIndex; index < text.length; index += 1) {
+    const char = text[index];
     if (quote) {
       if (escaped) {
         escaped = false;
@@ -382,7 +674,7 @@ function findMatchingParen(text, openIndex) {
     if (char === ")") {
       depth -= 1;
       if (depth === 0) {
-        return i;
+        return index;
       }
     }
   }
@@ -554,12 +846,17 @@ function parseSkip(value, fallback = 0, max = 100000) {
   return Math.min(raw, max);
 }
 
-async function runTerminalCommand(commandText) {
-  assertDbSelected();
-  const parsed = parseTerminalCommand(commandText, state.collectionName);
-  state.collectionName = parsed.collectionName;
+async function runTerminalCommand(commandText, runtime, connection) {
+  if (!connection.dbName) {
+    const error = new Error("请先选择数据库");
+    error.statusCode = 400;
+    throw error;
+  }
 
-  const collection = getCollection();
+  const parsed = parseTerminalCommand(commandText, connection.collectionName);
+  connection.collectionName = parsed.collectionName;
+
+  const collection = runtime.client.db(connection.dbName).collection(connection.collectionName);
   const startedAt = Date.now();
   const op = parsed.operation;
   const args = parsed.args;
@@ -594,26 +891,22 @@ async function runTerminalCommand(commandText) {
       const callArgs = call.args || [];
 
       if (method === "sort") {
-        const sort = assertPlainObject(parseEjsonInput(callArgs[0], {}), "sort");
-        cursor.sort(sort);
+        cursor.sort(assertPlainObject(parseEjsonInput(callArgs[0], {}), "sort"));
         continue;
       }
 
       if (method === "project") {
-        const project = assertPlainObject(parseEjsonInput(callArgs[0], {}), "projection");
-        cursor.project(project);
+        cursor.project(assertPlainObject(parseEjsonInput(callArgs[0], {}), "projection"));
         continue;
       }
 
       if (method === "limit") {
-        const limitValue = parseEjsonInput(callArgs[0], limit);
-        limit = parseLimit(limitValue, limit, 500);
+        limit = parseLimit(parseEjsonInput(callArgs[0], limit), limit, 500);
         continue;
       }
 
       if (method === "skip") {
-        const skipValue = parseEjsonInput(callArgs[0], skip);
-        skip = parseSkip(skipValue, skip, 100000);
+        skip = parseSkip(parseEjsonInput(callArgs[0], skip), skip, 100000);
         continue;
       }
 
@@ -627,6 +920,7 @@ async function runTerminalCommand(commandText) {
     if (skip > 0) {
       cursor.skip(skip);
     }
+
     const docs = await cursor.limit(limit).toArray();
     return {
       resultType: "find",
@@ -736,6 +1030,25 @@ async function runTerminalCommand(commandText) {
   );
 }
 
+function toCsv(docs) {
+  if (!docs.length) {
+    return "";
+  }
+
+  const keys = [...new Set(docs.flatMap((doc) => Object.keys(doc)))];
+  const esc = (value) => {
+    if (value === undefined) {
+      return "";
+    }
+    const text =
+      typeof value === "string" ? value : EJSON.stringify(value, { relaxed: false });
+    return `"${text.replaceAll('"', '""')}"`;
+  };
+
+  const lines = docs.map((doc) => keys.map((key) => esc(doc[key])).join(","));
+  return `${keys.join(",")}\n${lines.join("\n")}\n`;
+}
+
 function normalizeErrorMessage(error) {
   const raw = error?.message || "未知错误";
   if (raw.includes("ECONNREFUSED")) {
@@ -753,62 +1066,238 @@ function normalizeErrorMessage(error) {
   return raw;
 }
 
-app.get(apiPath("/health"), (_req, res) => {
-  res.json({ ok: true, status: getStatus() });
+async function connectSavedConnection(clientId, bucket, connection) {
+  bucket.activeConnectionId = connection.id;
+  return ensureRuntimeConnected(clientId, connection);
+}
+
+app.get(apiPath("/health"), (req, res) => {
+  const bucket = getClientBucket(req.clientId);
+  res.json({ ok: true, status: buildStatus(req.clientId, bucket) });
+});
+
+app.get(apiPath("/status"), (req, res) => {
+  const bucket = getClientBucket(req.clientId);
+  res.json({ ok: true, status: buildStatus(req.clientId, bucket) });
+});
+
+app.get(apiPath("/connections"), (req, res) => {
+  const bucket = getClientBucket(req.clientId);
+  res.json({
+    ok: true,
+    activeConnectionId: bucket.activeConnectionId,
+    status: buildStatus(req.clientId, bucket),
+    connections: listConnections(bucket).map((item) =>
+      buildConnectionSummary(req.clientId, item, bucket),
+    ),
+  });
 });
 
 app.post(
-  apiPath("/connect"),
+  apiPath("/connections"),
   asyncHandler(async (req, res) => {
+    const bucket = getClientBucket(req.clientId);
     const uri = String(req.body?.uri || "").trim();
     if (!uri) {
       return res.status(400).json({ ok: false, error: "连接字符串不能为空" });
     }
 
-    await closeCurrentClient();
-    const connected = await connectWithAdaptiveRetry(uri);
+    const id = req.body?.id ? String(req.body.id) : null;
+    const existing = id ? findConnection(bucket, id) : null;
+    const name =
+      String(req.body?.name || "").trim() || existing?.name || inferConnectionName(uri);
 
-    state.client = connected.client;
-    state.uri = connected.uri;
-    state.dbName = connected.client.db().databaseName || "";
-    state.collectionName = "";
+    const now = nowIso();
+    if (existing) {
+      existing.name = name;
+      existing.uri = uri;
+      existing.updatedAt = now;
+    } else {
+      const next = normalizeConnectionRecord({
+        id: crypto.randomUUID(),
+        name,
+        uri,
+        createdAt: now,
+        updatedAt: now,
+      });
+      bucket.connections.push(next);
+      bucket.activeConnectionId = next.id;
+    }
+
+    if (existing) {
+      bucket.activeConnectionId = existing.id;
+    }
+
+    await persistStore();
+    const active = findConnection(bucket, bucket.activeConnectionId);
+    res.json({
+      ok: true,
+      status: buildStatus(req.clientId, bucket),
+      connection: active ? buildConnectionSummary(req.clientId, active, bucket) : null,
+      activeConnectionId: bucket.activeConnectionId,
+    });
+  }),
+);
+
+app.post(
+  apiPath("/connections/:id/select"),
+  asyncHandler(async (req, res) => {
+    const bucket = getClientBucket(req.clientId);
+    const connection = findConnection(bucket, req.params.id);
+    if (!connection) {
+      return res.status(404).json({ ok: false, error: "连接配置不存在" });
+    }
+
+    bucket.activeConnectionId = connection.id;
+    connection.lastUsedAt = nowIso();
+    await persistStore();
 
     res.json({
       ok: true,
-      status: getStatus(),
+      status: buildStatus(req.clientId, bucket),
+      connection: buildConnectionSummary(req.clientId, connection, bucket),
+    });
+  }),
+);
+
+app.post(
+  apiPath("/connections/:id/connect"),
+  asyncHandler(async (req, res) => {
+    const bucket = getClientBucket(req.clientId);
+    const connection = findConnection(bucket, req.params.id);
+    if (!connection) {
+      return res.status(404).json({ ok: false, error: "连接配置不存在" });
+    }
+
+    const connected = await connectSavedConnection(req.clientId, bucket, connection);
+    await persistStore();
+
+    res.json({
+      ok: true,
+      status: buildStatus(req.clientId, bucket),
+      connection: buildConnectionSummary(req.clientId, connection, bucket),
       adapted: connected.adapted,
-      adaptationReason: connected.adapted ? connected.reason : null,
+      adaptationReason: connected.reason,
+    });
+  }),
+);
+
+app.post(
+  apiPath("/connections/:id/disconnect"),
+  asyncHandler(async (req, res) => {
+    const bucket = getClientBucket(req.clientId);
+    const connection = findConnection(bucket, req.params.id);
+    if (!connection) {
+      return res.status(404).json({ ok: false, error: "连接配置不存在" });
+    }
+
+    await disconnectRuntime(req.clientId, connection.id);
+    connection.lastUsedAt = nowIso();
+    await persistStore();
+
+    res.json({
+      ok: true,
+      status: buildStatus(req.clientId, bucket),
+      connection: buildConnectionSummary(req.clientId, connection, bucket),
+    });
+  }),
+);
+
+app.delete(
+  apiPath("/connections/:id"),
+  asyncHandler(async (req, res) => {
+    const bucket = getClientBucket(req.clientId);
+    const connection = findConnection(bucket, req.params.id);
+    if (!connection) {
+      return res.status(404).json({ ok: false, error: "连接配置不存在" });
+    }
+
+    await disconnectRuntime(req.clientId, connection.id);
+    removeConnection(bucket, connection.id);
+    await persistStore();
+
+    res.json({
+      ok: true,
+      status: buildStatus(req.clientId, bucket),
+      activeConnectionId: bucket.activeConnectionId,
+      connections: listConnections(bucket).map((item) =>
+        buildConnectionSummary(req.clientId, item, bucket),
+      ),
+    });
+  }),
+);
+
+app.post(
+  apiPath("/connect"),
+  asyncHandler(async (req, res) => {
+    const bucket = getClientBucket(req.clientId);
+    const uri = String(req.body?.uri || "").trim();
+    if (!uri) {
+      return res.status(400).json({ ok: false, error: "连接字符串不能为空" });
+    }
+
+    const name = String(req.body?.name || "").trim() || inferConnectionName(uri);
+    let connection = bucket.activeConnectionId
+      ? findConnection(bucket, bucket.activeConnectionId)
+      : null;
+
+    if (!connection) {
+      connection = normalizeConnectionRecord({
+        id: crypto.randomUUID(),
+        name,
+        uri,
+      });
+      bucket.connections.push(connection);
+      bucket.activeConnectionId = connection.id;
+    } else {
+      connection.name = name || connection.name;
+      connection.uri = uri;
+      connection.updatedAt = nowIso();
+    }
+
+    const connected = await connectSavedConnection(req.clientId, bucket, connection);
+    await persistStore();
+
+    res.json({
+      ok: true,
+      status: buildStatus(req.clientId, bucket),
+      adapted: connected.adapted,
+      adaptationReason: connected.reason,
+      activeConnectionId: bucket.activeConnectionId,
     });
   }),
 );
 
 app.post(
   apiPath("/disconnect"),
-  asyncHandler(async (_req, res) => {
-    await closeCurrentClient();
-    state.uri = "";
-    state.dbName = "";
-    state.collectionName = "";
-    res.json({ ok: true, status: getStatus() });
+  asyncHandler(async (req, res) => {
+    const bucket = getClientBucket(req.clientId);
+    if (bucket.activeConnectionId) {
+      await disconnectRuntime(req.clientId, bucket.activeConnectionId);
+    }
+    res.json({ ok: true, status: buildStatus(req.clientId, bucket) });
   }),
 );
 
-app.get(apiPath("/status"), (_req, res) => {
-  res.json({ ok: true, status: getStatus() });
-});
-
 app.get(
   apiPath("/databases"),
-  asyncHandler(async (_req, res) => {
-    assertConnected();
+  asyncHandler(async (req, res) => {
+    const { connection, runtime } = await requireReadyContext(req);
     try {
-      const list = await state.client.db("admin").admin().listDatabases();
+      const list = await runtime.client.db("admin").admin().listDatabases();
       const databases = list.databases
         .map((db) => ({ name: db.name, sizeOnDisk: db.sizeOnDisk }))
-        .sort((a, b) => a.name.localeCompare(b.name));
+        .sort((left, right) => left.name.localeCompare(right.name));
+
+      if (!connection.dbName && databases.length) {
+        connection.dbName = databases[0].name;
+        connection.updatedAt = nowIso();
+        await persistStore();
+      }
+
       return res.json({ ok: true, databases, warning: null });
     } catch (error) {
-      const fallbackDb = state.client.db().databaseName || "test";
+      const fallbackDb = runtime.client.db().databaseName || "test";
       return res.json({
         ok: true,
         databases: [{ name: fallbackDb, sizeOnDisk: null }],
@@ -821,27 +1310,30 @@ app.get(
 app.post(
   apiPath("/database"),
   asyncHandler(async (req, res) => {
-    assertConnected();
+    const { bucket, connection, runtime } = await requireReadyContext(req);
     const dbName = String(req.body?.dbName || "").trim();
     if (!dbName) {
       return res.status(400).json({ ok: false, error: "数据库名不能为空" });
     }
 
-    state.dbName = dbName;
-    state.collectionName = "";
+    connection.dbName = dbName;
+    connection.collectionName = "";
+    connection.updatedAt = nowIso();
 
     let collections = [];
     let warning = null;
     try {
-      const result = await state.client.db(state.dbName).listCollections().toArray();
-      collections = result.map((c) => c.name).sort((a, b) => a.localeCompare(b));
+      const result = await runtime.client.db(connection.dbName).listCollections().toArray();
+      collections = result.map((item) => item.name).sort((left, right) => left.localeCompare(right));
     } catch (error) {
       warning = `无法列出集合，请手动输入集合名。原因: ${error.message}`;
     }
 
+    await persistStore();
+
     res.json({
       ok: true,
-      status: getStatus(),
+      status: buildStatus(req.clientId, bucket),
       collections,
       warning,
     });
@@ -850,46 +1342,59 @@ app.post(
 
 app.get(
   apiPath("/collections"),
-  asyncHandler(async (_req, res) => {
-    assertDbSelected();
+  asyncHandler(async (req, res) => {
+    const { connection, runtime } = await requireReadyContext(req, { requireDb: true });
     let collections = [];
     let warning = null;
+
     try {
-      collections = await state.client.db(state.dbName).listCollections().toArray();
+      collections = await runtime.client.db(connection.dbName).listCollections().toArray();
     } catch (error) {
       warning = `无法列出集合，请手动输入集合名。原因: ${error.message}`;
     }
 
     res.json({
       ok: true,
-      collections: collections.map((c) => c.name).sort((a, b) => a.localeCompare(b)),
+      collections: collections.map((item) => item.name).sort((left, right) => left.localeCompare(right)),
       warning,
     });
   }),
 );
 
-app.post(apiPath("/collection"), (req, res) => {
-  assertDbSelected();
-  const collectionName = String(req.body?.collectionName || "").trim();
-  if (!collectionName) {
-    return res.status(400).json({ ok: false, error: "集合名不能为空" });
-  }
-  state.collectionName = collectionName;
-  res.json({ ok: true, status: getStatus() });
-});
+app.post(
+  apiPath("/collection"),
+  asyncHandler(async (req, res) => {
+    const { bucket, connection } = await requireReadyContext(req, { requireDb: true });
+    const collectionName = String(req.body?.collectionName || "").trim();
+    if (!collectionName) {
+      return res.status(400).json({ ok: false, error: "集合名不能为空" });
+    }
+
+    connection.collectionName = collectionName;
+    connection.updatedAt = nowIso();
+    await persistStore();
+
+    res.json({ ok: true, status: buildStatus(req.clientId, bucket) });
+  }),
+);
 
 app.post(
   apiPath("/command"),
   asyncHandler(async (req, res) => {
+    const { bucket, connection, runtime } = await requireReadyContext(req, { requireDb: true });
     const command = String(req.body?.command || "").trim();
     if (!command) {
       return res.status(400).json({ ok: false, error: "命令不能为空" });
     }
 
-    const result = await runTerminalCommand(command);
+    const result = await runTerminalCommand(command, runtime, connection);
+    connection.updatedAt = nowIso();
+    connection.lastUsedAt = nowIso();
+    await persistStore();
+
     res.json({
       ok: true,
-      status: getStatus(),
+      status: buildStatus(req.clientId, bucket),
       command,
       ...result,
     });
@@ -899,7 +1404,10 @@ app.post(
 app.post(
   apiPath("/query"),
   asyncHandler(async (req, res) => {
-    const collection = getCollection();
+    const { connection, runtime } = await requireReadyContext(req, {
+      requireDb: true,
+      requireCollection: true,
+    });
     const filter = parseEjsonInput(req.body?.filter, {});
     const projection = parseEjsonInput(req.body?.projection, undefined);
     const sort = parseEjsonInput(req.body?.sort, undefined);
@@ -908,7 +1416,7 @@ app.post(
       ? Math.min(Math.max(limitRaw, 1), 500)
       : 20;
 
-    const cursor = collection.find(filter);
+    const cursor = getCollection(runtime, connection).find(filter);
     if (projection) {
       cursor.project(projection);
     }
@@ -924,12 +1432,16 @@ app.post(
 app.post(
   apiPath("/insert"),
   asyncHandler(async (req, res) => {
-    const collection = getCollection();
+    const { runtime, connection } = await requireReadyContext(req, {
+      requireDb: true,
+      requireCollection: true,
+    });
     const doc = parseEjsonInput(req.body?.doc);
     if (!doc || Array.isArray(doc) || typeof doc !== "object") {
       return res.status(400).json({ ok: false, error: "插入内容必须是对象类型文档" });
     }
-    const result = await collection.insertOne(doc);
+
+    const result = await getCollection(runtime, connection).insertOne(doc);
     res.json({
       ok: true,
       insertedId: toTransport(result.insertedId),
@@ -940,7 +1452,10 @@ app.post(
 app.post(
   apiPath("/update"),
   asyncHandler(async (req, res) => {
-    const collection = getCollection();
+    const { runtime, connection } = await requireReadyContext(req, {
+      requireDb: true,
+      requireCollection: true,
+    });
     const filter = parseEjsonInput(req.body?.filter, {});
     const many = Boolean(req.body?.many);
     const upsert = Boolean(req.body?.upsert);
@@ -955,9 +1470,11 @@ app.post(
       update = { $set: update };
     }
 
+    const collection = getCollection(runtime, connection);
     const result = many
       ? await collection.updateMany(filter, update, { upsert })
       : await collection.updateOne(filter, update, { upsert });
+
     res.json({
       ok: true,
       matchedCount: result.matchedCount,
@@ -970,9 +1487,13 @@ app.post(
 app.post(
   apiPath("/delete"),
   asyncHandler(async (req, res) => {
-    const collection = getCollection();
+    const { runtime, connection } = await requireReadyContext(req, {
+      requireDb: true,
+      requireCollection: true,
+    });
     const filter = parseEjsonInput(req.body?.filter, {});
     const many = Boolean(req.body?.many);
+    const collection = getCollection(runtime, connection);
     const result = many
       ? await collection.deleteMany(filter)
       : await collection.deleteOne(filter);
@@ -982,8 +1503,12 @@ app.post(
 
 app.get(
   apiPath("/stats"),
-  asyncHandler(async (_req, res) => {
-    const collection = getCollection();
+  asyncHandler(async (req, res) => {
+    const { runtime, connection } = await requireReadyContext(req, {
+      requireDb: true,
+      requireCollection: true,
+    });
+    const collection = getCollection(runtime, connection);
     const [estimatedCount, accurateCount, indexes] = await Promise.all([
       collection.estimatedDocumentCount(),
       collection.countDocuments(),
@@ -992,9 +1517,9 @@ app.get(
 
     let collStats = null;
     try {
-      collStats = await state.client
-        .db(state.dbName)
-        .command({ collStats: state.collectionName, scale: 1 });
+      collStats = await runtime.client
+        .db(connection.dbName)
+        .command({ collStats: connection.collectionName, scale: 1 });
     } catch {
       collStats = null;
     }
@@ -1016,20 +1541,24 @@ app.get(
 app.get(
   apiPath("/indexes"),
   asyncHandler(async (req, res) => {
-    assertConnected();
-    const dbName = String(req.query?.dbName || state.dbName || "").trim();
+    const { runtime, connection } = await requireReadyContext(req, { requireDb: true });
+    const dbName = String(req.query?.dbName || connection.dbName || "").trim();
     const collectionName = String(req.query?.collectionName || "").trim();
-    if (!dbName) return res.status(400).json({ ok: false, error: "请先选择数据库" });
-    if (!collectionName) return res.status(400).json({ ok: false, error: "集合名不能为空" });
-    const collection = state.client.db(dbName).collection(collectionName);
-    const indexes = await collection.indexes();
+    if (!dbName) {
+      return res.status(400).json({ ok: false, error: "请先选择数据库" });
+    }
+    if (!collectionName) {
+      return res.status(400).json({ ok: false, error: "集合名不能为空" });
+    }
+
+    const indexes = await runtime.client.db(dbName).collection(collectionName).indexes();
     res.json({
       ok: true,
-      indexes: indexes.map((idx) => ({
-        name: idx.name,
-        key: idx.key,
-        unique: Boolean(idx.unique),
-        sparse: Boolean(idx.sparse),
+      indexes: indexes.map((item) => ({
+        name: item.name,
+        key: item.key,
+        unique: Boolean(item.unique),
+        sparse: Boolean(item.sparse),
       })),
     });
   }),
@@ -1038,7 +1567,10 @@ app.get(
 app.post(
   apiPath("/export"),
   asyncHandler(async (req, res) => {
-    const collection = getCollection();
+    const { runtime, connection } = await requireReadyContext(req, {
+      requireDb: true,
+      requireCollection: true,
+    });
     const filter = parseEjsonInput(req.body?.filter, {});
     const projection = parseEjsonInput(req.body?.projection, undefined);
     const sort = parseEjsonInput(req.body?.sort, undefined);
@@ -1048,7 +1580,7 @@ app.post(
       ? Math.min(Math.max(limitRaw, 1), 5000)
       : 100;
 
-    const cursor = collection.find(filter);
+    const cursor = getCollection(runtime, connection).find(filter);
     if (projection) {
       cursor.project(projection);
     }
@@ -1058,7 +1590,7 @@ app.post(
 
     const docs = await cursor.limit(limit).toArray();
 
-    let filename = `${state.dbName}_${state.collectionName}_${Date.now()}.${format}`;
+    let filename = `${connection.dbName}_${connection.collectionName}_${Date.now()}.${format}`;
     let mimeType = "text/plain; charset=utf-8";
     let content = "";
 
@@ -1075,7 +1607,7 @@ app.post(
       mimeType = "application/x-ndjson; charset=utf-8";
       content = docs.map((doc) => EJSON.stringify(doc, { relaxed: false })).join("\n");
     } else {
-      filename = `${state.dbName}_${state.collectionName}_${Date.now()}.txt`;
+      filename = `${connection.dbName}_${connection.collectionName}_${Date.now()}.txt`;
       content = EJSON.stringify(docs, { relaxed: false, indent: 2 });
     }
 
@@ -1093,17 +1625,35 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-const port = Number(process.env.PORT || 5000);
-const server = app.listen(port, () => {
-  console.log(`MongoDB Admin Web 已启动: http://localhost:${port}`);
-});
+let server = null;
 
 async function gracefulShutdown() {
-  await closeCurrentClient();
+  await disconnectAllRuntimes();
+  if (!server) {
+    process.exit(0);
+    return;
+  }
   server.close(() => {
     process.exit(0);
   });
 }
 
-process.on("SIGINT", gracefulShutdown);
-process.on("SIGTERM", gracefulShutdown);
+async function bootstrap() {
+  await loadStore();
+  const port = Number(process.env.PORT || 5000);
+  server = app.listen(port, () => {
+    console.log(`MongoDB Admin Web 已启动: http://localhost:${port}`);
+  });
+}
+
+process.on("SIGINT", () => {
+  void gracefulShutdown();
+});
+process.on("SIGTERM", () => {
+  void gracefulShutdown();
+});
+
+bootstrap().catch(async (error) => {
+  console.error(`启动失败: ${error.message}`);
+  await gracefulShutdown();
+});

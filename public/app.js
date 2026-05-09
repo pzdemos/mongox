@@ -5,7 +5,9 @@ const $ = (id) => document.getElementById(id);
 const state = {
   status: null,
   docs: [],
+  connections: [],
   connecting: false,
+  editingConnectionId: null,
   queryInputMode: "builder",
   queryInputCollapsed: false,
   terminal: {
@@ -33,6 +35,42 @@ const querySelectState = {
 const SIDEBAR_COLLAPSE_STORAGE_KEY = "mongodb_admin_sidebar_collapsed";
 const QUERY_INPUT_MODE_STORAGE_KEY = "mongodb_admin_query_input_mode";
 const QUERY_INPUT_COLLAPSED_STORAGE_KEY = "mongodb_admin_query_input_collapsed";
+
+function activeConnectionId() {
+  return state.status?.activeConnectionId || null;
+}
+
+function findSavedConnection(connectionId) {
+  return state.connections.find((item) => item.id === connectionId) || null;
+}
+
+function editingConnection() {
+  return findSavedConnection(state.editingConnectionId);
+}
+
+function readConnectionDraft() {
+  return {
+    name: $("connectionNameInput")?.value.trim() || "",
+    uri: $("uriInput")?.value.trim() || "",
+  };
+}
+
+function applyConnectionDraft(connection) {
+  $("connectionNameInput").value = connection?.name || "";
+  $("uriInput").value = connection?.uri || "";
+}
+
+function clearConnectionDraft() {
+  applyConnectionDraft({ name: "", uri: "mongodb://127.0.0.1:16016" });
+}
+
+function draftMatchesConnection(connection = editingConnection()) {
+  if (!connection) {
+    return false;
+  }
+  const draft = readConnectionDraft();
+  return draft.name === (connection.name || "") && draft.uri === (connection.uri || "");
+}
 
 function showToast(message, isError = false) {
   const toast = $("toast");
@@ -297,6 +335,26 @@ function setStatus(status) {
   renderStatusChip(status);
   renderTerminalContext();
   updateConnectToggle(status);
+  renderConnectionList();
+}
+
+function clearWorkspaceState() {
+  state.tree.databases = [];
+  state.tree.collectionsMap = {};
+  state.tree.expandedDbs.clear();
+  state.docs = [];
+  renderDbTree();
+  renderResults();
+}
+
+async function loadConnectionResources() {
+  if (!state.status?.connected) {
+    clearWorkspaceState();
+    return;
+  }
+
+  await refreshDatabases({ suppressError: true });
+  await refreshCollections({ suppressError: true });
 }
 
 function closeIndexContextMenu() {
@@ -377,6 +435,108 @@ async function showIndexContextMenu(dbName, colName, x, y) {
   } catch (error) {
     body.innerHTML = `<div class="context-menu-error">${error.message}</div>`;
   }
+}
+
+function renderConnectionList() {
+  const container = $("connectionList");
+  const meta = $("connectionMeta");
+  if (!container || !meta) {
+    return;
+  }
+
+  meta.textContent = `${state.connections.length} 个`;
+  container.innerHTML = "";
+
+  if (!state.connections.length) {
+    const empty = document.createElement("div");
+    empty.className = "tree-empty";
+    empty.textContent = "暂无连接配置";
+    container.appendChild(empty);
+    return;
+  }
+
+  const activeId = activeConnectionId();
+  state.connections.forEach((connection) => {
+    const item = document.createElement("article");
+    item.className = "connection-item";
+    if (connection.id === activeId) {
+      item.classList.add("active");
+    }
+    if (connection.id === state.editingConnectionId) {
+      item.classList.add("editing");
+    }
+
+    item.addEventListener("click", () => {
+      void handleConnectionSelect(connection.id);
+    });
+
+    const header = document.createElement("div");
+    header.className = "connection-item-header";
+
+    const title = document.createElement("div");
+    title.className = "connection-item-title";
+    title.textContent = connection.name || "未命名连接";
+
+    const badge = document.createElement("span");
+    badge.className = `connection-badge${connection.connected ? " connected" : ""}`;
+    badge.textContent = connection.connected ? "在线" : "离线";
+
+    header.appendChild(title);
+    header.appendChild(badge);
+
+    const uri = document.createElement("div");
+    uri.className = "connection-item-uri";
+    uri.textContent = connection.uriMasked || connection.uri || "";
+
+    const metaLine = document.createElement("div");
+    metaLine.className = "connection-item-meta";
+    metaLine.textContent = `${connection.dbName || "未选库"} / ${
+      connection.collectionName || "未选集合"
+    }`;
+
+    const actions = document.createElement("div");
+    actions.className = "connection-item-actions";
+
+    const useBtn = document.createElement("button");
+    useBtn.type = "button";
+    useBtn.className = "ghost";
+    useBtn.textContent = "编辑";
+    useBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void handleConnectionSelect(connection.id);
+    });
+
+    const toggleBtn = document.createElement("button");
+    toggleBtn.type = "button";
+    toggleBtn.textContent = connection.connected ? "断开" : "连接";
+    toggleBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (connection.connected) {
+        void handleDisconnectConnection(connection.id);
+      } else {
+        void handleConnectSavedConnection(connection.id);
+      }
+    });
+
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "danger";
+    deleteBtn.textContent = "删除";
+    deleteBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void handleDeleteConnection(connection.id);
+    });
+
+    actions.appendChild(useBtn);
+    actions.appendChild(toggleBtn);
+    actions.appendChild(deleteBtn);
+
+    item.appendChild(header);
+    item.appendChild(uri);
+    item.appendChild(metaLine);
+    item.appendChild(actions);
+    container.appendChild(item);
+  });
 }
 
 function renderDbTree() {
@@ -548,9 +708,15 @@ function renderStatusChip(status) {
   }
 
   chip.classList.remove("connecting");
-  chip.textContent = status.connected
-    ? `已连接: ${status.dbName || "(未选库)"} / ${status.collectionName || "(未选集合)"}`
-    : "未连接";
+  if (status.connected) {
+    chip.textContent = `${status.connectionName || "当前连接"} · ${
+      status.dbName || "(未选库)"
+    } / ${status.collectionName || "(未选集合)"}`;
+  } else if (status.activeConnectionId) {
+    chip.textContent = `未连接 · ${status.connectionName || "已选配置"}`;
+  } else {
+    chip.textContent = "未连接";
+  }
   chip.classList.toggle("connected", status.connected);
 }
 
@@ -800,7 +966,7 @@ function renderTerminalContext() {
 
   const status = state.status || {};
   if (!status.connected) {
-    context.textContent = "未连接";
+    context.textContent = status.connectionName || "未连接";
     prompt.textContent = "db.(collection)>";
     return;
   }
@@ -1176,6 +1342,41 @@ function bindQuerySelect(type, onChange) {
 async function refreshStatus() {
   const data = await api(`${API_BASE}/api/status`);
   setStatus(data.status);
+}
+
+async function refreshConnections({ preserveDraft = false, fallbackToActive = false } = {}) {
+  const data = await api(`${API_BASE}/api/connections`);
+  state.connections = data.connections || [];
+  if (data.status) {
+    setStatus(data.status);
+  }
+
+  if (preserveDraft) {
+    if (state.editingConnectionId && !findSavedConnection(state.editingConnectionId)) {
+      state.editingConnectionId = null;
+    }
+    renderConnectionList();
+    return data;
+  }
+
+  let nextEditingId = state.editingConnectionId;
+  if (nextEditingId && !findSavedConnection(nextEditingId)) {
+    nextEditingId = null;
+  }
+  if (!nextEditingId && fallbackToActive) {
+    nextEditingId = data.activeConnectionId || activeConnectionId();
+  }
+
+  state.editingConnectionId = nextEditingId || null;
+  const editing = editingConnection();
+  if (editing) {
+    applyConnectionDraft(editing);
+  } else if (!preserveDraft) {
+    clearConnectionDraft();
+  }
+
+  renderConnectionList();
+  return data;
 }
 
 async function refreshDatabases({ suppressError = false } = {}) {
@@ -2545,25 +2746,50 @@ function renderResults() {
   }
 }
 
-function readQueryPayload() {
-  return {
-    filter: $("queryFilter").value.trim(),
-    projection: $("queryProjection").value.trim(),
-    sort: $("querySort").value.trim(),
-    limit: Number($("queryLimit").value || 20),
-  };
+async function saveConnectionDraft({ quiet = false } = {}) {
+  const draft = readConnectionDraft();
+  if (!draft.uri) {
+    throw new Error("连接字符串不能为空");
+  }
+
+  const data = await api(`${API_BASE}/api/connections`, {
+    method: "POST",
+    body: JSON.stringify({
+      id: state.editingConnectionId || undefined,
+      name: draft.name,
+      uri: draft.uri,
+    }),
+  });
+
+  if (data.connection?.id) {
+    state.editingConnectionId = data.connection.id;
+  }
+
+  await refreshConnections();
+  if (!quiet) {
+    showToast("连接配置已保存");
+  }
+  return data.connection;
 }
 
-async function connectUsingCurrentInput() {
-  const uri = $("uriInput").value.trim();
-  const data = await api(`${API_BASE}/api/connect`, {
+async function handleConnectionSelect(connectionId) {
+  await api(`${API_BASE}/api/connections/${connectionId}/select`, {
     method: "POST",
-    body: JSON.stringify({ uri }),
+    body: "{}",
   });
+  state.editingConnectionId = connectionId;
+  await refreshConnections();
+  await loadConnectionResources();
+}
+
+async function handleConnectSavedConnection(connectionId) {
+  const data = await api(`${API_BASE}/api/connections/${connectionId}/connect`, {
+    method: "POST",
+    body: "{}",
+  });
+  state.editingConnectionId = connectionId;
   setStatus(data.status);
-  if (data.status?.uri) {
-    $("uriInput").value = data.status.uri;
-  }
+  await refreshConnections();
   const dbResult = await refreshDatabases({ suppressError: true });
   const collectionResult = await refreshCollections({ suppressError: true });
 
@@ -2576,13 +2802,64 @@ async function connectUsingCurrentInput() {
     notices.push(`部分列表不可见：${warnings[0]}`);
   }
 
-  if (notices.length) {
-    showToast(`连接成功，${notices.join("；")}`);
+  showToast(notices.length ? `连接成功，${notices.join("；")}` : "连接成功");
+}
+
+async function handleDisconnectConnection(connectionId) {
+  const data = await api(`${API_BASE}/api/connections/${connectionId}/disconnect`, {
+    method: "POST",
+    body: "{}",
+  });
+  setStatus(data.status);
+  await refreshConnections({ preserveDraft: connectionId !== state.editingConnectionId });
+  await loadConnectionResources();
+  showToast("已断开连接");
+}
+
+async function handleDeleteConnection(connectionId) {
+  const connection = findSavedConnection(connectionId);
+  const accepted = window.confirm(
+    `确认删除连接配置“${connection?.name || "未命名连接"}”吗？`,
+  );
+  if (!accepted) {
     return;
   }
 
-  showToast("连接成功");
-  renderDbTree();
+  const data = await api(`${API_BASE}/api/connections/${connectionId}`, {
+    method: "DELETE",
+  });
+
+  if (state.editingConnectionId === connectionId) {
+    state.editingConnectionId = null;
+  }
+
+  setStatus(data.status);
+  await refreshConnections({ fallbackToActive: true });
+  await loadConnectionResources();
+  showToast("连接配置已删除");
+}
+
+async function handleNewConnectionDraft() {
+  state.editingConnectionId = null;
+  clearConnectionDraft();
+  renderConnectionList();
+}
+
+function readQueryPayload() {
+  return {
+    filter: $("queryFilter").value.trim(),
+    projection: $("queryProjection").value.trim(),
+    sort: $("querySort").value.trim(),
+    limit: Number($("queryLimit").value || 20),
+  };
+}
+
+async function connectUsingCurrentInput() {
+  const connection = await saveConnectionDraft({ quiet: true });
+  if (!connection?.id) {
+    throw new Error("连接配置保存失败");
+  }
+  await handleConnectSavedConnection(connection.id);
 }
 
 async function handleConnect(event) {
@@ -2599,19 +2876,19 @@ async function handleConnect(event) {
 }
 
 async function handleDisconnect() {
-  const data = await api(`${API_BASE}/api/disconnect`, { method: "POST", body: "{}" });
-  setStatus(data.status);
-  state.tree.databases = [];
-  state.tree.collectionsMap = {};
-  state.tree.expandedDbs.clear();
-  renderDbTree();
-  state.docs = [];
-  renderResults();
-  showToast("已断开连接");
+  const currentId = activeConnectionId();
+  if (!currentId) {
+    throw new Error("当前没有可断开的连接");
+  }
+  await handleDisconnectConnection(currentId);
 }
 
 async function handleConnectToggle() {
-  if (state.status?.connected) {
+  const activeId = activeConnectionId();
+  const editingId = state.editingConnectionId;
+  const editingIsActive = Boolean(editingId && activeId && editingId === activeId);
+
+  if (state.status?.connected && editingIsActive && draftMatchesConnection()) {
     await handleDisconnect();
     return;
   }
@@ -2786,6 +3063,10 @@ function setupTabs() {
 
 function bindEvents() {
   $("connectForm").addEventListener("submit", wrap(handleConnect));
+  $("saveConnectionBtn").addEventListener("click", wrap(() => saveConnectionDraft()));
+  $("newConnectionBtn").addEventListener("click", () => {
+    void handleNewConnectionDraft();
+  });
   $("sidebarToggleBtn").addEventListener("click", () => {
     const next = !document.body.classList.contains("sidebar-collapsed");
     applySidebarCollapsed(next);
@@ -2919,9 +3200,10 @@ async function init() {
   applyQueryInputCollapsed(getSavedQueryInputCollapsed(), { persist: false });
   renderTerminalContext();
   setTerminalRunning(false);
+  clearConnectionDraft();
   await refreshStatus();
-  await refreshDatabases({ suppressError: true });
-  await refreshCollections({ suppressError: true });
+  await refreshConnections({ fallbackToActive: true });
+  await loadConnectionResources();
   renderDbTree();
   renderResults();
 }

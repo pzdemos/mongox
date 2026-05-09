@@ -18,6 +18,14 @@
         <div class="side-panel-content">
         <section class="block">
           <form id="connectForm" class="connect-form">
+            <label>
+              连接名称
+              <input
+                id="connectionNameInput"
+                type="text"
+                placeholder="例如：测试环境 / 本地开发"
+              />
+            </label>
             <div class="connect-row">
               <input
                 id="uriInput"
@@ -52,7 +60,20 @@
                 </svg>
               </button>
             </div>
+            <div class="connect-actions">
+              <button id="saveConnectionBtn" type="button">保存配置</button>
+              <button id="newConnectionBtn" type="button" class="ghost">新建草稿</button>
+            </div>
+            <p class="connect-help">连接配置保存在服务器本地，并按当前浏览器独立隔离。</p>
           </form>
+        </section>
+
+        <section class="block">
+          <div class="block-title-row">
+            <h2>连接列表</h2>
+            <span id="connectionMeta" class="block-meta">0 个</span>
+          </div>
+          <div id="connectionList" class="connection-list"></div>
         </section>
 
         <section class="block tree-block">
