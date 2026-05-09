@@ -131,6 +131,24 @@
         <section id="tab-query" class="tab-content active">
           <section id="queryTerminalPanel" class="terminal-panel" hidden>
             <div class="terminal-head">
+              <button
+                id="terminalCollapseBtn"
+                type="button"
+                class="panel-collapse-btn"
+                aria-label="折叠查询输入区"
+                title="折叠查询输入区"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M18 15l-6-6-6 6"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg>
+              </button>
               <div class="terminal-tab">mongosh</div>
               <div id="terminalContext" class="terminal-context">未连接</div>
               <div class="terminal-head-actions">
@@ -156,6 +174,24 @@
             </div>
           </section>
           <div id="queryBuilderPanel" class="query-builder-card">
+            <button
+              id="builderCollapseBtn"
+              type="button"
+              class="panel-collapse-btn"
+              aria-label="折叠查询输入区"
+              title="折叠查询输入区"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M18 15l-6-6-6 6"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
             <div id="builderCornerHost" class="query-corner-host"></div>
             <div class="grid-2">
               <label>
@@ -228,24 +264,6 @@
             </div>
             <button id="exportBtn" type="button" class="corner-export-btn" title="导出结果">
               导出
-            </button>
-            <button
-              id="queryCollapseBtn"
-              type="button"
-              class="corner-collapse-btn"
-              aria-label="折叠查询输入区"
-              title="折叠查询输入区"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M18 15l-6-6-6 6"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
             </button>
           </div>
           <div id="resultsMeta" class="meta"></div>

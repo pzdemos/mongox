@@ -679,7 +679,8 @@ function applyQueryInputCollapsed(collapsed, { persist = true } = {}) {
 
   const builderPanel = $("queryBuilderPanel");
   const terminalPanel = $("queryTerminalPanel");
-  const collapseBtn = $("queryCollapseBtn");
+  const builderCollapseBtn = $("builderCollapseBtn");
+  const terminalCollapseBtn = $("terminalCollapseBtn");
 
   if (builderPanel) {
     builderPanel.classList.toggle("collapsed", isCollapsed);
@@ -687,14 +688,16 @@ function applyQueryInputCollapsed(collapsed, { persist = true } = {}) {
   if (terminalPanel) {
     terminalPanel.classList.toggle("collapsed", isCollapsed);
   }
-  if (collapseBtn) {
-    collapseBtn.setAttribute("aria-label", isCollapsed ? "展开查询输入区" : "折叠查询输入区");
-    collapseBtn.title = isCollapsed ? "展开查询输入区" : "折叠查询输入区";
-    const path = collapseBtn.querySelector("path");
+
+  [builderCollapseBtn, terminalCollapseBtn].forEach((btn) => {
+    if (!btn) return;
+    btn.setAttribute("aria-label", isCollapsed ? "展开查询输入区" : "折叠查询输入区");
+    btn.title = isCollapsed ? "展开查询输入区" : "折叠查询输入区";
+    const path = btn.querySelector("path");
     if (path) {
       path.setAttribute("d", isCollapsed ? "M6 9l6 6 6-6" : "M18 15l-6-6-6 6");
     }
-  }
+  });
 
   if (canvasTable) {
     setTimeout(() => canvasTable._resize(), 0);
@@ -2826,7 +2829,10 @@ function bindEvents() {
     applyQueryInputMode("terminal");
     $("terminalInput").focus();
   });
-  $("queryCollapseBtn").addEventListener("click", () => {
+  $("builderCollapseBtn").addEventListener("click", () => {
+    applyQueryInputCollapsed(!state.queryInputCollapsed);
+  });
+  $("terminalCollapseBtn").addEventListener("click", () => {
     applyQueryInputCollapsed(!state.queryInputCollapsed);
   });
   $("viewMode").addEventListener("change", renderResults);

@@ -414,7 +414,7 @@ body.sidebar-collapsed .main-collapse-btn svg {
   background: linear-gradient(180deg, #fff4e7 0%, #efdcc5 100%);
 }
 
-.corner-collapse-btn {
+.panel-collapse-btn {
   width: 26px;
   height: 26px;
   padding: 0;
@@ -428,13 +428,20 @@ body.sidebar-collapsed .main-collapse-btn svg {
   cursor: pointer;
 }
 
-.corner-collapse-btn:hover {
+.panel-collapse-btn:hover {
   background: linear-gradient(180deg, #fff4e7 0%, #efdcc5 100%);
 }
 
-.corner-collapse-btn svg {
+.panel-collapse-btn svg {
   width: 14px;
   height: 14px;
+}
+
+#builderCollapseBtn {
+  position: absolute;
+  top: 6px;
+  left: 8px;
+  z-index: 10;
 }
 
 /* ── collapsed input panels ── */
@@ -455,7 +462,7 @@ body.sidebar-collapsed .main-collapse-btn svg {
 
 .terminal-head {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto auto 1fr auto;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
