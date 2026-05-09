@@ -198,6 +198,18 @@ function findConnection(bucket, connectionId) {
   return bucket.connections.find((item) => item.id === connectionId) || null;
 }
 
+function findConnectionByUri(bucket, uri, excludeId = null) {
+  const normalized = String(uri || "").trim();
+  if (!normalized) {
+    return null;
+  }
+  return (
+    bucket.connections.find(
+      (item) => item.uri === normalized && (!excludeId || item.id !== excludeId),
+    ) || null
+  );
+}
+
 function removeConnection(bucket, connectionId) {
   bucket.connections = bucket.connections.filter((item) => item.id !== connectionId);
   if (bucket.activeConnectionId === connectionId) {
@@ -1103,7 +1115,9 @@ app.post(
     }
 
     const id = req.body?.id ? String(req.body.id) : null;
-    const existing = id ? findConnection(bucket, id) : null;
+    const existing = id
+      ? findConnection(bucket, id)
+      : findConnectionByUri(bucket, uri);
     const name =
       String(req.body?.name || "").trim() || existing?.name || inferConnectionName(uri);
 
@@ -1240,6 +1254,10 @@ app.post(
     let connection = bucket.activeConnectionId
       ? findConnection(bucket, bucket.activeConnectionId)
       : null;
+
+    if (!connection) {
+      connection = findConnectionByUri(bucket, uri);
+    }
 
     if (!connection) {
       connection = normalizeConnectionRecord({
