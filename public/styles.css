@@ -448,11 +448,19 @@ body.sidebar-collapsed .main-collapse-btn svg {
 #queryBuilderPanel.collapsed {
   padding: 6px 12px;
   min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 #queryBuilderPanel.collapsed .grid-2,
 #queryBuilderPanel.collapsed .query-toolbar {
   display: none;
+}
+
+#queryBuilderPanel.collapsed #builderCollapseBtn,
+#queryBuilderPanel.collapsed #builderCornerHost {
+  position: static;
 }
 
 #queryTerminalPanel.collapsed .terminal-output,
@@ -1594,12 +1602,43 @@ button.danger {
   }
 
   .query-builder-card {
-    padding-top: 36px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 6px 10px 10px;
+    gap: 6px;
+  }
+
+  .query-builder-card .grid-2,
+  .query-builder-card .query-toolbar {
+    width: 100%;
+  }
+
+  #builderCollapseBtn {
+    position: static;
+    flex-shrink: 0;
   }
 
   #builderCornerHost {
     position: static;
-    margin: 6px 0 0;
+    margin: 0 0 0 auto;
+  }
+
+  #builderCornerHost .query-corner-controls {
+    width: auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+
+  /* collapsed on mobile: just show the collapse button */
+  #queryBuilderPanel.collapsed #builderCornerHost {
+    display: none;
+  }
+
+  #queryBuilderPanel.collapsed {
+    justify-content: flex-start;
+    padding: 6px 10px;
   }
 
   #terminalCornerHost {
