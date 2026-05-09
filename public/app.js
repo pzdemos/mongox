@@ -7,6 +7,7 @@ const state = {
   docs: [],
   connecting: false,
   queryInputMode: "builder",
+  queryInputCollapsed: false,
   terminal: {
     running: false,
     history: [],
@@ -31,6 +32,7 @@ const querySelectState = {
 
 const SIDEBAR_COLLAPSE_STORAGE_KEY = "mongodb_admin_sidebar_collapsed";
 const QUERY_INPUT_MODE_STORAGE_KEY = "mongodb_admin_query_input_mode";
+const QUERY_INPUT_COLLAPSED_STORAGE_KEY = "mongodb_admin_query_input_collapsed";
 
 function showToast(message, isError = false) {
   const toast = $("toast");
@@ -655,6 +657,54 @@ function saveQueryInputMode(mode) {
   }
 }
 
+function getSavedQueryInputCollapsed() {
+  try {
+    return localStorage.getItem(QUERY_INPUT_COLLAPSED_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveQueryInputCollapsed(collapsed) {
+  try {
+    localStorage.setItem(QUERY_INPUT_COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function applyQueryInputCollapsed(collapsed, { persist = true } = {}) {
+  const isCollapsed = Boolean(collapsed);
+  state.queryInputCollapsed = isCollapsed;
+
+  const builderPanel = $("queryBuilderPanel");
+  const terminalPanel = $("queryTerminalPanel");
+  const collapseBtn = $("queryCollapseBtn");
+
+  if (builderPanel) {
+    builderPanel.classList.toggle("collapsed", isCollapsed);
+  }
+  if (terminalPanel) {
+    terminalPanel.classList.toggle("collapsed", isCollapsed);
+  }
+  if (collapseBtn) {
+    collapseBtn.setAttribute("aria-label", isCollapsed ? "展开查询输入区" : "折叠查询输入区");
+    collapseBtn.title = isCollapsed ? "展开查询输入区" : "折叠查询输入区";
+    const path = collapseBtn.querySelector("path");
+    if (path) {
+      path.setAttribute("d", isCollapsed ? "M6 9l6 6 6-6" : "M18 15l-6-6-6 6");
+    }
+  }
+
+  if (canvasTable) {
+    setTimeout(() => canvasTable._resize(), 0);
+  }
+
+  if (persist) {
+    saveQueryInputCollapsed(isCollapsed);
+  }
+}
+
 function updateOperationTabbarVisibility() {
   const bar = document.querySelector(".operation-tabbar");
   if (!bar) {
@@ -719,6 +769,7 @@ function applyQueryInputMode(mode, { persist = true } = {}) {
   closeAllQuerySelects();
   mountQueryCornerControls(nextMode);
   updateOperationTabbarVisibility();
+  applyQueryInputCollapsed(state.queryInputCollapsed, { persist: false });
 
   if (persist) {
     saveQueryInputMode(nextMode);
@@ -2775,6 +2826,9 @@ function bindEvents() {
     applyQueryInputMode("terminal");
     $("terminalInput").focus();
   });
+  $("queryCollapseBtn").addEventListener("click", () => {
+    applyQueryInputCollapsed(!state.queryInputCollapsed);
+  });
   $("viewMode").addEventListener("change", renderResults);
   $("exportBtn").addEventListener("click", wrap(handleExport));
 
@@ -2856,6 +2910,7 @@ async function init() {
   initSidebarCollapseState();
   bindEvents();
   applyQueryInputMode(getSavedQueryInputMode(), { persist: false });
+  applyQueryInputCollapsed(getSavedQueryInputCollapsed(), { persist: false });
   renderTerminalContext();
   setTerminalRunning(false);
   await refreshStatus();

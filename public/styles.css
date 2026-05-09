@@ -414,6 +414,45 @@ body.sidebar-collapsed .main-collapse-btn svg {
   background: linear-gradient(180deg, #fff4e7 0%, #efdcc5 100%);
 }
 
+.corner-collapse-btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid #d9c5ad;
+  background: linear-gradient(180deg, #fff9f0 0%, #f4e6d3 100%);
+  color: #5f4a36;
+  cursor: pointer;
+}
+
+.corner-collapse-btn:hover {
+  background: linear-gradient(180deg, #fff4e7 0%, #efdcc5 100%);
+}
+
+.corner-collapse-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── collapsed input panels ── */
+#queryBuilderPanel.collapsed {
+  padding: 6px 12px;
+  min-height: 36px;
+}
+
+#queryBuilderPanel.collapsed .grid-2,
+#queryBuilderPanel.collapsed .query-toolbar {
+  display: none;
+}
+
+#queryTerminalPanel.collapsed .terminal-output,
+#queryTerminalPanel.collapsed .terminal-input-row {
+  display: none;
+}
+
 .terminal-head {
   display: grid;
   grid-template-columns: auto 1fr auto;
