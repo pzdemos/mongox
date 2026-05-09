@@ -2752,10 +2752,15 @@ async function saveConnectionDraft({ quiet = false } = {}) {
     throw new Error("连接字符串不能为空");
   }
 
+  const editing = editingConnection();
+  const shouldUpdateExisting = Boolean(
+    editing && draft.uri === (editing.uri || ""),
+  );
+
   const data = await api(`${API_BASE}/api/connections`, {
     method: "POST",
     body: JSON.stringify({
-      id: state.editingConnectionId || undefined,
+      id: shouldUpdateExisting ? state.editingConnectionId : undefined,
       name: draft.name,
       uri: draft.uri,
     }),
