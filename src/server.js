@@ -87,10 +87,25 @@ function getCollection() {
   return state.client.db(state.dbName).collection(state.collectionName);
 }
 
+function maskMongoUri(uri) {
+  if (!uri || typeof uri !== "string") {
+    return uri;
+  }
+  try {
+    const url = new URL(uri);
+    if (url.password) {
+      url.password = "****";
+    }
+    return url.toString();
+  } catch {
+    return uri.replace(/(mongodb(\+srv)?:\/\/[^:@]+:)[^@]+(@)/, "$1****$3");
+  }
+}
+
 function getStatus() {
   return {
     connected: Boolean(state.client),
-    uri: state.uri,
+    uri: maskMongoUri(state.uri),
     dbName: state.dbName,
     collectionName: state.collectionName,
   };
