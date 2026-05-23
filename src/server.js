@@ -408,7 +408,7 @@ async function connectWithAdaptiveRetry(uri) {
   }
 
   for (const candidate of candidates) {
-    const result = await tryConnect(candidate, 6000);
+    const result = await tryConnect(candidate, 3000);
     if (result) {
       return { ...result, adapted: result.uri !== uri };
     }
@@ -1302,7 +1302,7 @@ app.get(
   asyncHandler(async (req, res) => {
     const { connection, runtime } = await requireReadyContext(req);
     try {
-      const list = await runtime.client.db("admin").admin().listDatabases();
+      const list = await runtime.client.db("admin").admin().listDatabases({ nameOnly: true });
       const databases = list.databases
         .map((db) => ({ name: db.name, sizeOnDisk: db.sizeOnDisk }))
         .sort((left, right) => left.name.localeCompare(right.name));

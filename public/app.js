@@ -19,6 +19,7 @@ const state = {
     databases: [],
     expandedDbs: new Set(),
     collectionsMap: {},
+    busy: false,
   },
 };
 
@@ -395,8 +396,10 @@ async function loadConnectionResources() {
     return;
   }
 
-  await refreshDatabases({ suppressError: true });
-  await refreshCollections({ suppressError: true });
+  await Promise.all([
+    refreshDatabases({ suppressError: true }),
+    refreshCollections({ suppressError: true }),
+  ]);
 }
 
 function closeIndexContextMenu() {
@@ -618,6 +621,7 @@ function renderDbTree() {
     dbRow.appendChild(name);
 
     dbRow.addEventListener("click", async () => {
+      if (state.tree.busy) return;
       if (dbName === currentDb) {
         if (state.tree.expandedDbs.has(dbName)) {
           state.tree.expandedDbs.delete(dbName);
@@ -628,6 +632,7 @@ function renderDbTree() {
         return;
       }
 
+      state.tree.busy = true;
       try {
         const data = await api(`${API_BASE}/api/database`, {
           method: "POST",
@@ -640,6 +645,8 @@ function renderDbTree() {
         showToast(`数据库已切换: ${dbName}`);
       } catch (error) {
         showToast(error.message, true);
+      } finally {
+        state.tree.busy = false;
       }
       await refreshStatus();
     });
@@ -689,43 +696,47 @@ function renderDbTree() {
 
           colRow.addEventListener("click", async (e) => {
             e.stopPropagation();
-            // Auto-collapse sidebar on mobile after selecting collection
-            if (isMobile()) applySidebarCollapsed(true);
+            if (state.tree.busy) return;
+            state.tree.busy = true;
+            try {
+              if (isMobile()) applySidebarCollapsed(true);
 
-            if (dbName !== currentDb) {
+              if (dbName !== currentDb) {
+                try {
+                  const data = await api(`${API_BASE}/api/database`, {
+                    method: "POST",
+                    body: JSON.stringify({ dbName }),
+                  });
+                  setStatus(data.status);
+                  state.tree.expandedDbs.add(dbName);
+                  state.tree.collectionsMap[dbName] = data.collections || [];
+                } catch (error) {
+                  showToast(error.message, true);
+                  return;
+                }
+              }
               try {
-                const data = await api(`${API_BASE}/api/database`, {
+                const data = await api(`${API_BASE}/api/collection`, {
                   method: "POST",
-                  body: JSON.stringify({ dbName }),
+                  body: JSON.stringify({ collectionName: colName }),
                 });
                 setStatus(data.status);
-                state.tree.expandedDbs.add(dbName);
-                state.tree.collectionsMap[dbName] = data.collections || [];
+                renderDbTree();
+                try {
+                  const qData = await api(`${API_BASE}/api/query`, {
+                    method: "POST",
+                    body: JSON.stringify({ filter: "{}", limit: 20 }),
+                  });
+                  state.docs = qData.docs;
+                  renderResults();
+                } catch { /* ignore auto-query error */ }
               } catch (error) {
                 showToast(error.message, true);
-                return;
               }
+              await refreshStatus();
+            } finally {
+              state.tree.busy = false;
             }
-            try {
-              const data = await api(`${API_BASE}/api/collection`, {
-                method: "POST",
-                body: JSON.stringify({ collectionName: colName }),
-              });
-              setStatus(data.status);
-              renderDbTree();
-              // auto query
-              try {
-                const qData = await api(`${API_BASE}/api/query`, {
-                  method: "POST",
-                  body: JSON.stringify({ filter: "{}", limit: 20 }),
-                });
-                state.docs = qData.docs;
-                renderResults();
-              } catch { /* ignore auto-query error */ }
-            } catch (error) {
-              showToast(error.message, true);
-            }
-            await refreshStatus();
           });
           colList.appendChild(colRow);
         });
@@ -1447,21 +1458,17 @@ async function refreshConnections({ preserveDraft = false, fallbackToActive = fa
 async function refreshDatabases({ suppressError = false } = {}) {
   if (!state.status?.connected) {
     state.tree.databases = [];
-    renderDbTree();
     return { warning: null };
   }
   try {
     const data = await api(`${API_BASE}/api/databases`);
     state.tree.databases = data.databases.map((d) => d.name);
-    // auto-expand current db
     if (state.status?.dbName) {
       state.tree.expandedDbs.add(state.status.dbName);
     }
-    renderDbTree();
     return { warning: data.warning || null };
   } catch (error) {
     state.tree.databases = [];
-    renderDbTree();
     if (!suppressError) {
       throw error;
     }
@@ -1478,7 +1485,6 @@ async function refreshCollections({ suppressError = false } = {}) {
     const dbName = state.status.dbName;
     state.tree.collectionsMap[dbName] = data.collections;
     state.tree.expandedDbs.add(dbName);
-    renderDbTree();
     return { warning: data.warning || null };
   } catch (error) {
     if (!suppressError) {
@@ -2859,9 +2865,14 @@ async function handleConnectSavedConnection(connectionId) {
   });
   state.editingConnectionId = connectionId;
   setStatus(data.status);
+  if (data.status?.uri) {
+    $("uriInput").value = data.status.uri;
+  }
   await refreshConnections();
-  const dbResult = await refreshDatabases({ suppressError: true });
-  const collectionResult = await refreshCollections({ suppressError: true });
+  const [dbResult, collectionResult] = await Promise.all([
+    refreshDatabases({ suppressError: true }),
+    refreshCollections({ suppressError: true }),
+  ]);
 
   const notices = [];
   if (data.adapted && data.adaptationReason) {
@@ -3095,6 +3106,7 @@ async function executeTerminalCommand() {
       setStatus(data.status);
       syncUiByStatus(data.status);
       await refreshCollections({ suppressError: true });
+      renderDbTree();
     }
 
     if (data.resultType === "find") {
@@ -3155,7 +3167,7 @@ function bindEvents() {
   });
 
   $("connectToggleBtn").addEventListener("click", wrap(handleConnectToggle));
-  $("refreshDbBtn").addEventListener("click", wrap(refreshDatabases));
+  $("refreshDbBtn").addEventListener("click", wrap(async () => { await refreshDatabases(); renderDbTree(); }));
 
   document.addEventListener("click", (event) => {
     const viewSelectRoot = $("viewModePicker");
