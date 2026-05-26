@@ -1599,7 +1599,7 @@ class CanvasTable {
     const seen = new Set();
     this.docs.slice(0, 30).forEach((doc) => {
       Object.keys(doc).forEach((key) => {
-        if (!seen.has(key) && seen.size < 10) {
+        if (!seen.has(key)) {
           seen.add(key);
         }
       });
