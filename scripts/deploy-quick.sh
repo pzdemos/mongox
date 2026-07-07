@@ -7,6 +7,9 @@
 
 set -e
 
+# Switch to project root (script lives in scripts/)
+cd "$(dirname "$0")/.."
+
 # Configuration
 REMOTE_HOST="root@121.43.33.235"
 REMOTE_PATH="/var/server/mongox"
