@@ -1459,7 +1459,7 @@ button.danger {
   position: fixed;
   right: 14px;
   bottom: 14px;
-  max-width: min(380px, 90vw);
+  max-width: min(420px, 90vw);
   padding: 8px 12px;
   border-radius: 6px;
   background: #1f1b18;
@@ -1470,6 +1470,8 @@ button.danger {
   pointer-events: none;
   transition: 180ms ease;
   font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre-line;
   box-shadow: 0 4px 12px rgba(40, 24, 9, 0.15);
 }
 
@@ -1991,4 +1993,47 @@ button.danger {
   text-align: center;
   color: var(--danger);
   font-size: 0.78rem;
+}
+
+.results-skeleton {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skeleton-row {
+  height: 16px;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    rgba(125, 106, 86, 0.10) 0%,
+    rgba(125, 106, 86, 0.22) 50%,
+    rgba(125, 106, 86, 0.10) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-row:nth-child(odd) {
+  width: 92%;
+}
+
+.skeleton-row:nth-child(even) {
+  width: 68%;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-row {
+    animation: none;
+  }
 }

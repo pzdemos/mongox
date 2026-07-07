@@ -13,7 +13,7 @@ set -e  # Exit on error
 REMOTE_HOST="root@121.43.33.235"
 REMOTE_PATH="/var/server/mongox"
 PM2_APP_NAME="mongox"
-PM2_CMD="/root/.nvm/versions/node/v21.7.3/bin/pm2"
+PM2_CMD="/root/.nvm/versions/node/v22.22.1/bin/pm2"
 BRANCH="dev"
 
 # Colors for output
@@ -163,35 +163,81 @@ deploy_to_remote() {
     check_result "SSH connection failed"
     print_success "SSH connection OK"
 
-    # Pull changes on remote
-    print_info "Pulling changes on remote..."
-    ssh "$REMOTE_HOST" "cd $REMOTE_PATH && git pull origin $BRANCH"
-    check_result "Failed to pull on remote"
-    print_success "Changes pulled"
+    # Run remote workflow: stash -> 3-way pull -> dep check -> reload -> health check
+    print_info "Syncing code and reloading remote..."
+    ssh "$REMOTE_HOST" bash -s "$REMOTE_PATH" "$BRANCH" "$PM2_APP_NAME" "$PM2_CMD" <<'REMOTE_SCRIPT'
+set -e
+REMOTE_PATH="$1"; BRANCH="$2"; PM2_APP_NAME="$3"; PM2_CMD="$4"
+HEALTH_URL="http://127.0.0.1:5000/mongo/api/health"
 
-    # Restart PM2 app
-    print_info "Restarting PM2 app: $PM2_APP_NAME..."
-    ssh "$REMOTE_HOST" "$PM2_CMD restart $PM2_APP_NAME"
-    check_result "Failed to restart PM2 app"
-    print_success "PM2 app restarted"
+cd "$REMOTE_PATH"
 
-    # Verify deployment
-    print_info "Verifying deployment..."
-    ssh "$REMOTE_HOST" "$PM2_CMD status $PM2_APP_NAME" | grep -q "online"
-    check_result "Deployment verification failed"
-    print_success "Deployment verified"
+# Stash if dirty (e.g. operator-edited runtime files)
+if [ -n "$(git status --porcelain)" ]; then
+    echo "== Remote dirty, stashing =="
+    git stash push -m "deploy-auto-stash-$(date +%Y%m%d-%H%M%S)"
+fi
+
+# 3-way pull decision
+git fetch origin "$BRANCH"
+LOCAL=$(git rev-parse @)
+REMOTE=$(git rev-parse "origin/$BRANCH")
+BASE=$(git merge-base @ "origin/$BRANCH")
+
+NEED_INSTALL=false
+if [ "$LOCAL" = "$REMOTE" ]; then
+    echo "== Already up to date =="
+elif [ "$LOCAL" = "$BASE" ]; then
+    BEFORE=$(git rev-parse HEAD)
+    echo "== Pulling new commits =="
+    git pull --ff-only origin "$BRANCH"
+    git diff --name-only "$BEFORE" HEAD | grep -qE '^(package\.json|package-lock\.json)$' && NEED_INSTALL=true
+else
+    BEFORE=$(git rev-parse HEAD)
+    echo "== Local diverged, force sync to origin/$BRANCH =="
+    git reset --hard "origin/$BRANCH"
+    git diff --name-only "$BEFORE" HEAD | grep -qE '^(package\.json|package-lock\.json)$' && NEED_INSTALL=true
+fi
+
+if [ "$NEED_INSTALL" = true ]; then
+    echo "== package.json changed, running npm install =="
+    npm install --omit=dev
+fi
+
+# Reload PM2 (zero-downtime cluster reload)
+echo "== Reloading PM2 app: $PM2_APP_NAME =="
+"$PM2_CMD" reload "$PM2_APP_NAME"
+
+# Health check (cluster reload is rolling; give new workers a moment)
+echo "== Waiting for service (2s) =="
+sleep 2
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
+if [ "$HTTP_CODE" = "200" ]; then
+    echo "== Health check passed (HTTP 200) =="
+else
+    echo "== Health check FAILED (HTTP $HTTP_CODE), dumping logs =="
+    "$PM2_CMD" logs "$PM2_APP_NAME" --lines 30 --nostream
+    exit 1
+fi
+REMOTE_SCRIPT
+    check_result "Remote deploy failed (see output above)"
+    print_success "Deployment verified (HTTP 200)"
 }
 
-# Rollback on failure
-rollback() {
-    print_section "Rolling back deployment"
+# Diagnose failure (does NOT auto-rollback — too risky on shared branch)
+diagnose_failure() {
+    print_section "Deployment Failed - Diagnostic Info"
 
-    print_warning "Attempting to rollback..."
+    print_warning "Deployment failed. Gathering diagnostic info..."
 
-    # Restart previous version
-    ssh "$REMOTE_HOST" "$PM2_CMD restart $PM2_APP_NAME" 2>/dev/null || true
+    print_info "Remote git HEAD:"
+    ssh "$REMOTE_HOST" "cd $REMOTE_PATH && git log --oneline -3" 2>/dev/null || true
 
-    print_warning "Rollback completed. Please check the server status."
+    print_info "Recent PM2 logs (last 20 lines):"
+    ssh "$REMOTE_HOST" "$PM2_CMD logs $PM2_APP_NAME --lines 20 --nostream" 2>/dev/null || true
+
+    print_warning "If bad code was pushed, manual rollback:"
+    print_warning "  ssh $REMOTE_HOST \"cd $REMOTE_PATH && git reset --hard HEAD~1 && $PM2_CMD reload $PM2_APP_NAME\""
 }
 
 # Main execution
@@ -202,8 +248,8 @@ main() {
     local current_dir=$(pwd)
     cd "$(dirname "$0")/.." || exit 1
 
-    # Trap errors for rollback
-    trap 'rollback; cd "$current_dir"' ERR
+    # Trap errors for diagnostics
+    trap 'diagnose_failure; cd "$current_dir"' ERR
 
     # Execute workflow
     check_git_repo
@@ -220,7 +266,7 @@ main() {
     print_section "Deployment Complete"
     print_success "All operations completed successfully!"
     echo ""
-    print_info "App URL: http://$REMOTE_HOST:5000"
+    print_info "App URL: https://mongo.haoaiganfan.top"
     print_info "PM2 Status: ssh $REMOTE_HOST \"$PM2_CMD status\""
     print_info "View Logs: ssh $REMOTE_HOST \"$PM2_CMD logs $PM2_APP_NAME --lines 50\""
 

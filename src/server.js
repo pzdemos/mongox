@@ -369,14 +369,14 @@ async function connectWithUri(uri, timeoutMS = 10000) {
 }
 
 async function connectWithAdaptiveRetry(uri) {
-  const tried = new Set();
+  const tried = [];
   let lastError = null;
 
   const tryConnect = async ({ uri: candidateUri, reason }, timeoutMS) => {
-    if (!candidateUri || tried.has(candidateUri)) {
+    if (!candidateUri || tried.some((t) => t.uri === candidateUri)) {
       return null;
     }
-    tried.add(candidateUri);
+    tried.push({ uri: candidateUri, reason });
 
     try {
       const client = await connectWithUri(candidateUri, timeoutMS);
@@ -389,7 +389,7 @@ async function connectWithAdaptiveRetry(uri) {
 
   const primary = await tryConnect(
     { uri, reason: "使用原始连接字符串" },
-    10000,
+    6000,
   );
   if (primary) {
     return { ...primary, adapted: false };
@@ -408,13 +408,16 @@ async function connectWithAdaptiveRetry(uri) {
   }
 
   for (const candidate of candidates) {
-    const result = await tryConnect(candidate, 3000);
+    const result = await tryConnect(candidate, 2000);
     if (result) {
       return { ...result, adapted: result.uri !== uri };
     }
   }
 
-  throw lastError || new Error("连接失败");
+  const err = lastError || new Error("连接失败");
+  err.triedVariants = tried;
+  err.statusCode = 502;
+  throw err;
 }
 
 async function pingRuntime(runtime) {
@@ -1637,10 +1640,14 @@ app.post(
 
 app.use((error, _req, res, _next) => {
   const statusCode = error.statusCode || 500;
-  res.status(statusCode).json({
+  const body = {
     ok: false,
     error: normalizeErrorMessage(error),
-  });
+  };
+  if (Array.isArray(error.triedVariants) && error.triedVariants.length > 1) {
+    body.triedVariants = error.triedVariants;
+  }
+  res.status(statusCode).json(body);
 });
 
 let server = null;

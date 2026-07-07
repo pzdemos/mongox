@@ -10,6 +10,14 @@ const state = {
   editingConnectionId: null,
   queryInputMode: "builder",
   queryInputCollapsed: false,
+  loading: {
+    query: false,
+    insert: false,
+    update: false,
+    delete: false,
+    databases: false,
+    collections: false,
+  },
   terminal: {
     running: false,
     history: [],
@@ -115,12 +123,13 @@ function getDraftContext() {
   };
 }
 
-function showToast(message, isError = false) {
+function showToast(message, isError = false, { duration = 2600, detail = "" } = {}) {
   const toast = $("toast");
-  toast.textContent = message;
+  toast.textContent = detail ? `${message}\n${detail}` : message;
   toast.style.background = isError ? "#6b2a23" : "#1f1b18";
   toast.classList.add("show");
-  setTimeout(() => toast.classList.remove("show"), 2600);
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => toast.classList.remove("show"), duration);
 }
 
 function getSavedSidebarCollapsed() {
@@ -351,13 +360,28 @@ function createIdFoldElement(idValue) {
   return details;
 }
 
-async function api(url, options = {}) {
-  const response = await fetch(url, {
-    headers: {
-      "Content-Type": "application/json",
-    },
-    ...options,
-  });
+async function api(url, options = {}, { timeoutMs = 30000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+      ...options,
+    });
+  } catch (err) {
+    if (err.name === "AbortError") {
+      const e = new Error("请求超时");
+      e.timeout = true;
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   let payload = {};
   const contentType = response.headers.get("content-type") || "";
@@ -366,10 +390,34 @@ async function api(url, options = {}) {
   }
 
   if (!response.ok || payload.ok === false) {
-    throw new Error(payload.error || `请求失败: ${response.status}`);
+    const e = new Error(payload.error || `请求失败: ${response.status}`);
+    e.payload = payload;
+    throw e;
   }
 
   return payload;
+}
+
+async function runWithLoading(key, buttonId, busyText, fn) {
+  if (state.loading[key]) return;
+  state.loading[key] = true;
+  const btn = $(buttonId);
+  const originalText = btn?.textContent;
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.originalText = originalText;
+    btn.textContent = busyText;
+  }
+  try {
+    return await fn();
+  } finally {
+    state.loading[key] = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText;
+      delete btn.dataset.originalText;
+    }
+  }
 }
 
 function setStatus(status) {
@@ -2738,6 +2786,26 @@ async function handleDeleteConfirm() {
   }
 }
 
+function renderResultsSkeleton() {
+  const container = $("resultsContainer");
+  const meta = $("resultsMeta");
+  if (!container) return;
+  if (canvasTable) {
+    canvasTable.destroy();
+    canvasTable = null;
+  }
+  container.innerHTML = "";
+  const skeleton = document.createElement("div");
+  skeleton.className = "results-skeleton";
+  for (let i = 0; i < 5; i++) {
+    const row = document.createElement("div");
+    row.className = "skeleton-row";
+    skeleton.appendChild(row);
+  }
+  container.appendChild(skeleton);
+  if (meta) meta.textContent = "查询中...";
+}
+
 function renderResults() {
   const container = $("resultsContainer");
   const docs = state.docs;
@@ -2993,36 +3061,46 @@ async function handleSetCollection() {
 }
 
 async function handleQuery() {
-  const payload = readQueryPayload();
-  const data = await api(`${API_BASE}/api/query`, {
-    method: "POST",
-    body: JSON.stringify(payload),
+  await runWithLoading("query", "runQueryBtn", "查询中...", async () => {
+    renderResultsSkeleton();
+    try {
+      const payload = readQueryPayload();
+      const data = await api(`${API_BASE}/api/query`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      state.docs = data.docs;
+      showToast(`查询完成: ${data.count} 条`);
+    } finally {
+      renderResults();
+    }
   });
-  state.docs = data.docs;
-  renderResults();
-  showToast(`查询完成: ${data.count} 条`);
 }
 
 async function handleInsert() {
-  const doc = $("insertDoc").value.trim();
-  const data = await api(`${API_BASE}/api/insert`, {
-    method: "POST",
-    body: JSON.stringify({ doc }),
+  await runWithLoading("insert", "insertBtn", "插入中...", async () => {
+    const doc = $("insertDoc").value.trim();
+    const data = await api(`${API_BASE}/api/insert`, {
+      method: "POST",
+      body: JSON.stringify({ doc }),
+    });
+    showToast(`插入成功: ${JSON.stringify(data.insertedId)}`);
   });
-  showToast(`插入成功: ${JSON.stringify(data.insertedId)}`);
 }
 
 async function handleUpdate() {
-  const data = await api(`${API_BASE}/api/update`, {
-    method: "POST",
-    body: JSON.stringify({
-      filter: $("updateFilter").value.trim(),
-      update: $("updateDoc").value.trim(),
-      many: $("updateMany").checked,
-      upsert: $("updateUpsert").checked,
-    }),
+  await runWithLoading("update", "updateBtn", "更新中...", async () => {
+    const data = await api(`${API_BASE}/api/update`, {
+      method: "POST",
+      body: JSON.stringify({
+        filter: $("updateFilter").value.trim(),
+        update: $("updateDoc").value.trim(),
+        many: $("updateMany").checked,
+        upsert: $("updateUpsert").checked,
+      }),
+    });
+    showToast(`更新完成: matched ${data.matchedCount}, modified ${data.modifiedCount}`);
   });
-  showToast(`更新完成: matched ${data.matchedCount}, modified ${data.modifiedCount}`);
 }
 
 async function handleDelete() {
@@ -3030,14 +3108,16 @@ async function handleDelete() {
   if (!accepted) {
     return;
   }
-  const data = await api(`${API_BASE}/api/delete`, {
-    method: "POST",
-    body: JSON.stringify({
-      filter: $("deleteFilter").value.trim(),
-      many: $("deleteMany").checked,
-    }),
+  await runWithLoading("delete", "deleteBtn", "删除中...", async () => {
+    const data = await api(`${API_BASE}/api/delete`, {
+      method: "POST",
+      body: JSON.stringify({
+        filter: $("deleteFilter").value.trim(),
+        many: $("deleteMany").checked,
+      }),
+    });
+    showToast(`删除完成: ${data.deletedCount} 条`);
   });
-  showToast(`删除完成: ${data.deletedCount} 条`);
 }
 
 async function handleStats() {
@@ -3274,7 +3354,16 @@ function wrap(fn) {
       await fn(...args);
       await refreshStatus();
     } catch (error) {
-      showToast(error.message, true);
+      const variants = error?.payload?.triedVariants;
+      if (Array.isArray(variants) && variants.length > 1) {
+        const reasons = variants.map((v) => v.reason).join("、");
+        showToast(error.message, true, {
+          duration: 5500,
+          detail: `已尝试 ${variants.length} 种方式：${reasons}`,
+        });
+      } else {
+        showToast(error.message, true);
+      }
     }
   };
 }
@@ -3295,6 +3384,13 @@ async function init() {
   await loadConnectionResources();
   renderDbTree();
   renderResults();
+
+  const s = state.status;
+  if (s?.activeConnectionId && !s?.connected) {
+    showToast("上次会话的连接未恢复，请点击「连接」按钮重新建立", false, {
+      duration: 4500,
+    });
+  }
 }
 
 init().catch((error) => showToast(error.message, true));
