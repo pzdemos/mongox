@@ -6,114 +6,367 @@
     <title>登录 · Mongo Atelier</title>
     <link rel="stylesheet" href="./styles.css" />
     <style>
-      .login-wrap {
+      :root {
+        --auth-shadow-sm: 0 1px 2px rgba(40, 24, 9, 0.04);
+        --auth-shadow-md: 0 8px 24px rgba(40, 24, 9, 0.06), 0 2px 6px rgba(40, 24, 9, 0.04);
+        --auth-shadow-focus: 0 0 0 4px rgba(14, 140, 106, 0.12);
+      }
+
+      body {
+        background:
+          radial-gradient(circle at 12% 8%, #fff8ef 0%, var(--bg) 55%),
+          radial-gradient(circle at 88% 92%, rgba(14, 140, 106, 0.06) 0%, transparent 45%);
+      }
+
+      .auth-bg-orb {
+        position: fixed;
+        border-radius: 50%;
+        filter: blur(80px);
+        pointer-events: none;
+        z-index: 0;
+        opacity: 0.55;
+        animation: drift 18s ease-in-out infinite;
+      }
+      .auth-bg-orb.orb-1 {
+        width: 320px;
+        height: 320px;
+        background: radial-gradient(circle, rgba(14, 140, 106, 0.45), transparent 70%);
+        top: -80px;
+        right: -60px;
+      }
+      .auth-bg-orb.orb-2 {
+        width: 280px;
+        height: 280px;
+        background: radial-gradient(circle, rgba(125, 74, 36, 0.35), transparent 70%);
+        bottom: -100px;
+        left: -80px;
+        animation-delay: -9s;
+        animation-duration: 22s;
+      }
+      @keyframes drift {
+        0%, 100% { transform: translate(0, 0); }
+        50%      { transform: translate(20px, -16px); }
+      }
+
+      .auth-wrap {
+        position: relative;
+        z-index: 1;
         min-height: 100vh;
         display: flex;
         align-items: center;
         justify-content: center;
         padding: 24px;
       }
-      .login-card {
+
+      .auth-card {
         width: 100%;
-        max-width: 360px;
+        max-width: 380px;
         background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: calc(var(--radius) * 1.5);
-        box-shadow: var(--shadow);
-        padding: 32px 28px;
+        border: 1px solid var(--line-light);
+        border-radius: 14px;
+        box-shadow: var(--auth-shadow-md);
+        padding: 38px 32px 32px;
+        animation: auth-rise 480ms cubic-bezier(0.22, 1, 0.36, 1) both;
       }
-      .login-brand {
-        font-size: 18px;
-        font-weight: 600;
-        color: var(--text);
-        margin-bottom: 4px;
+      @keyframes auth-rise {
+        from { opacity: 0; transform: translateY(12px) scale(0.985); }
+        to   { opacity: 1; transform: translateY(0)   scale(1); }
       }
-      .login-hint {
-        font-size: 13px;
-        color: var(--muted);
-        margin-bottom: 24px;
-      }
-      .login-form {
+
+      .auth-brand {
         display: flex;
         flex-direction: column;
-        gap: 14px;
+        align-items: center;
+        margin-bottom: 28px;
       }
-      .login-form label {
-        font-size: 13px;
+      .auth-logo {
+        width: 52px;
+        height: 52px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 14px;
+        background: linear-gradient(140deg, #0e8c6a 0%, #066a52 60%, #054d3b 100%);
+        color: #fffdf8;
+        box-shadow:
+          0 6px 16px rgba(14, 140, 106, 0.28),
+          inset 0 1px 0 rgba(255, 255, 255, 0.18);
+        margin-bottom: 14px;
+      }
+      .auth-logo svg {
+        width: 26px;
+        height: 26px;
+      }
+      .auth-title {
+        font-size: 1.25rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        margin: 0;
+        background: linear-gradient(120deg, #7d4a24 0%, #0e8c6a 55%, #574231 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .auth-subtitle {
+        font-size: 0.82rem;
         color: var(--muted);
+        margin-top: 4px;
+      }
+
+      .auth-form {
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 16px;
       }
-      .login-form input[type="password"] {
-        padding: 10px 12px;
+
+      .auth-field {
+        position: relative;
+      }
+      .auth-label {
+        font-size: 0.78rem;
+        color: var(--muted);
+        margin-bottom: 6px;
+        display: block;
+        letter-spacing: 0.02em;
+      }
+      .auth-input-wrap {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+      .auth-input {
+        width: 100%;
+        padding: 11px 44px 11px 14px;
         font-size: 14px;
+        font-family: inherit;
         color: var(--text);
         background: var(--panel-2);
         border: 1px solid var(--line);
         border-radius: var(--radius);
         outline: none;
-        transition: border-color 0.15s;
+        transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
       }
-      .login-form input[type="password"]:focus {
+      .auth-input:focus {
         border-color: var(--brand);
         background: var(--panel);
+        box-shadow: var(--auth-shadow-focus);
       }
-      .login-submit {
-        margin-top: 8px;
-        padding: 10px 16px;
+      .auth-input::placeholder {
+        color: #b9a994;
+      }
+
+      .auth-toggle {
+        position: absolute;
+        right: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 28px;
+        height: 28px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        color: var(--muted);
+        cursor: pointer;
+        transition: color 140ms ease, background 140ms ease;
+      }
+      .auth-toggle:hover {
+        color: var(--text);
+        background: rgba(40, 24, 9, 0.05);
+      }
+      .auth-toggle svg {
+        width: 16px;
+        height: 16px;
+      }
+
+      .auth-submit {
+        margin-top: 4px;
+        padding: 11px 16px;
         font-size: 14px;
-        color: #fff;
-        background: var(--brand);
+        font-weight: 500;
+        font-family: inherit;
+        letter-spacing: 0.04em;
+        color: #fffdf8;
+        background: linear-gradient(140deg, #0e8c6a 0%, #066a52 100%);
         border: none;
         border-radius: var(--radius);
         cursor: pointer;
-        transition: background 0.15s;
+        transition: background 160ms ease, transform 80ms ease, box-shadow 160ms ease;
+        box-shadow:
+          0 4px 12px rgba(14, 140, 106, 0.2),
+          inset 0 1px 0 rgba(255, 255, 255, 0.12);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 40px;
       }
-      .login-submit:hover {
-        background: var(--brand-2);
+      .auth-submit:hover {
+        background: linear-gradient(140deg, #0a7d5e 0%, #055a45 100%);
+        box-shadow:
+          0 6px 16px rgba(14, 140, 106, 0.28),
+          inset 0 1px 0 rgba(255, 255, 255, 0.14);
       }
-      .login-submit:disabled {
-        opacity: 0.6;
+      .auth-submit:active {
+        transform: translateY(1px);
+      }
+      .auth-submit:disabled {
+        opacity: 0.7;
         cursor: not-allowed;
+        transform: none;
       }
-      .login-error {
+      .auth-submit .spin {
+        width: 14px;
+        height: 14px;
+        border: 2px solid rgba(255, 255, 255, 0.35);
+        border-top-color: #fffdf8;
+        border-radius: 50%;
+        animation: spin 720ms linear infinite;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+
+      .auth-error {
         min-height: 18px;
-        font-size: 13px;
+        font-size: 0.82rem;
         color: var(--danger);
+        text-align: center;
+        opacity: 0;
+        transform: translateY(-2px);
+        transition: opacity 180ms ease, transform 180ms ease;
+      }
+      .auth-error.show {
+        opacity: 1;
+        transform: translateY(0);
+        animation: shake 360ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+      }
+      @keyframes shake {
+        10%, 90% { transform: translateX(-1px); }
+        20%, 80% { transform: translateX(2px); }
+        30%, 50%, 70% { transform: translateX(-3px); }
+        40%, 60% { transform: translateX(3px); }
+      }
+
+      .auth-footer {
+        margin-top: 22px;
+        text-align: center;
+        font-size: 0.72rem;
+        color: var(--muted);
+        opacity: 0.7;
+      }
+
+      @media (max-width: 420px) {
+        .auth-card {
+          padding: 30px 22px 24px;
+          border-radius: 12px;
+        }
+        .auth-logo {
+          width: 46px;
+          height: 46px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .auth-card,
+        .auth-bg-orb,
+        .auth-error.show {
+          animation: none !important;
+        }
+        .auth-submit .spin {
+          animation-duration: 1.2s;
+        }
       }
     </style>
   </head>
   <body>
-    <div class="bg-shape shape-a"></div>
-    <div class="bg-shape shape-b"></div>
+    <div class="auth-bg-orb orb-1" aria-hidden="true"></div>
+    <div class="auth-bg-orb orb-2" aria-hidden="true"></div>
 
-    <div class="login-wrap">
-      <div class="login-card">
-        <div class="login-brand">Mongo Atelier</div>
-        <div class="login-hint">请输入访问密码</div>
-        <form id="loginForm" class="login-form" autocomplete="on">
-          <label>
-            密码
-            <input id="passwordInput" type="password" name="password" autofocus required />
-          </label>
-          <button type="submit" class="login-submit" id="loginSubmitBtn">进入</button>
-          <div id="loginError" class="login-error"></div>
-        </form>
-      </div>
+    <div class="auth-wrap">
+      <form id="loginForm" class="auth-card" autocomplete="on" novalidate>
+        <div class="auth-brand">
+          <div class="auth-logo" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <ellipse cx="12" cy="5" rx="8" ry="3"></ellipse>
+              <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"></path>
+              <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"></path>
+            </svg>
+          </div>
+          <h1 class="auth-title">Mongo Atelier</h1>
+          <div class="auth-subtitle">MongoDB 管理工具 · 请登录后继续</div>
+        </div>
+
+        <div class="auth-field">
+          <label class="auth-label" for="passwordInput">访问密码</label>
+          <div class="auth-input-wrap">
+            <input
+              id="passwordInput"
+              class="auth-input"
+              type="password"
+              name="password"
+              placeholder="请输入访问密码"
+              autocomplete="current-password"
+              autofocus
+              required
+            />
+            <button
+              type="button"
+              class="auth-toggle"
+              id="togglePwd"
+              aria-label="显示或隐藏密码"
+              aria-pressed="false"
+            >
+              <svg id="eyeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                <circle cx="12" cy="12" r="3"></circle>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" class="auth-submit" id="loginSubmitBtn">
+          <span class="auth-submit-text">进入</span>
+        </button>
+
+        <div id="loginError" class="auth-error" role="alert" aria-live="polite"></div>
+
+        <div class="auth-footer">仅限授权访问</div>
+      </form>
     </div>
 
     <script>
       const form = document.getElementById("loginForm");
       const passwordInput = document.getElementById("passwordInput");
       const submitBtn = document.getElementById("loginSubmitBtn");
+      const submitText = submitBtn.querySelector(".auth-submit-text");
       const errorEl = document.getElementById("loginError");
+      const toggleBtn = document.getElementById("togglePwd");
+
+      const eyeOpen = `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>`;
+      const eyeClosed = `<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line>`;
+
+      toggleBtn.addEventListener("click", () => {
+        const isHidden = passwordInput.type === "password";
+        passwordInput.type = isHidden ? "text" : "password";
+        toggleBtn.setAttribute("aria-pressed", String(isHidden));
+        document.getElementById("eyeIcon").innerHTML = isHidden ? eyeClosed : eyeOpen;
+        passwordInput.focus();
+      });
 
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
+        errorEl.classList.remove("show");
         errorEl.textContent = "";
         submitBtn.disabled = true;
-        submitBtn.textContent = "验证中...";
+        submitText.textContent = "验证中";
+        const spinner = document.createElement("span");
+        spinner.className = "spin";
+        submitBtn.appendChild(spinner);
+
         try {
           const response = await fetch("/mongo/api/login", {
             method: "POST",
@@ -122,15 +375,30 @@
           });
           const data = await response.json().catch(() => ({}));
           if (response.ok && data.ok) {
+            submitText.textContent = "已通过";
             location.href = "/";
             return;
           }
-          errorEl.textContent = data.error || `登录失败 (${response.status})`;
+          showError(data.error || `登录失败 (${response.status})`);
         } catch (err) {
-          errorEl.textContent = "网络错误，请重试";
+          showError("网络错误，请重试");
         } finally {
           submitBtn.disabled = false;
-          submitBtn.textContent = "进入";
+          submitText.textContent = "进入";
+          if (spinner.parentNode) spinner.parentNode.removeChild(spinner);
+        }
+      });
+
+      function showError(msg) {
+        errorEl.textContent = msg;
+        errorEl.classList.add("show");
+        passwordInput.focus();
+        passwordInput.select();
+      }
+
+      passwordInput.addEventListener("input", () => {
+        if (errorEl.classList.contains("show")) {
+          errorEl.classList.remove("show");
         }
       });
     </script>
