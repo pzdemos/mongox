@@ -13,14 +13,15 @@ import { MongoClient } from "mongodb";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
-app.use(express.json({ limit: "2mb" }));
-app.use(express.static(path.join(__dirname, "..", "public")));
-
 const API_PREFIX = "/mongo/api";
 const apiPath = (pathName) => `${API_PREFIX}${pathName}`;
 const COOKIE_NAME = "mongox_client_id";
 const COOKIE_MAX_AGE = 1000 * 60 * 60 * 24 * 365;
+const AUTH_COOKIE_NAME = "mongox_auth";
+const AUTH_MAX_AGE = 1000 * 60 * 60 * 24 * 7;
+const AUTH_PASSWORD = process.env.MONGOX_PASSWORD || "";
+const PUBLIC_PATHS = new Set(["/login", "/login.html"]);
+const PUBLIC_API_PREFIXES = [`${API_PREFIX}/login`, `${API_PREFIX}/health`];
 const DATA_DIR = path.join(__dirname, "..", "data");
 const STORE_FILE = path.join(DATA_DIR, "connections.json");
 
@@ -28,6 +29,14 @@ let persistentStore = { clients: {} };
 let persistQueue = Promise.resolve();
 const runtimeStore = new Map();
 const reconnectLocks = new Map();
+
+const app = express();
+app.use(express.json({ limit: "2mb" }));
+app.use(requireAuth);
+app.get("/login", (_req, res) => {
+  res.sendFile(path.join(__dirname, "..", "public", "login.html"));
+});
+app.use(express.static(path.join(__dirname, "..", "public")));
 
 const asyncHandler =
   (fn) =>
@@ -100,6 +109,42 @@ function serializeCookie(name, value, maxAge) {
     "HttpOnly",
     "SameSite=Lax",
   ].join("; ");
+}
+
+function signAuth(payload) {
+  const hmac = crypto.createHmac("sha256", AUTH_PASSWORD).update(payload).digest("hex");
+  return `${payload}.${hmac}`;
+}
+
+function verifyAuth(cookieValue) {
+  if (typeof cookieValue !== "string" || !cookieValue.includes(".")) return false;
+  const sepIdx = cookieValue.lastIndexOf(".");
+  const payload = cookieValue.slice(0, sepIdx);
+  const sig = cookieValue.slice(sepIdx + 1);
+  const expected = crypto.createHmac("sha256", AUTH_PASSWORD).update(payload).digest("hex");
+  if (sig.length !== expected.length) return false;
+  let a = Buffer.from(sig, "hex");
+  let b = Buffer.from(expected, "hex");
+  if (a.length !== b.length || a.length === 0) return false;
+  if (!crypto.timingSafeEqual(a, b)) return false;
+  const expireAt = Number.parseInt(payload, 10);
+  if (!Number.isFinite(expireAt) || expireAt < Date.now()) return false;
+  return true;
+}
+
+function isPublicPath(reqPath) {
+  if (PUBLIC_PATHS.has(reqPath)) return true;
+  return PUBLIC_API_PREFIXES.some((p) => reqPath === p || reqPath.startsWith(`${p}/`));
+}
+
+function requireAuth(req, res, next) {
+  if (isPublicPath(req.path)) return next();
+  const cookies = parseCookies(req.headers.cookie || "");
+  if (verifyAuth(cookies[AUTH_COOKIE_NAME])) return next();
+  if (req.path.startsWith(API_PREFIX)) {
+    return res.status(401).json({ ok: false, error: "未登录或会话已过期" });
+  }
+  return res.redirect("/login");
 }
 
 app.use((req, res, next) => {
@@ -1091,6 +1136,30 @@ app.get(apiPath("/health"), (req, res) => {
   res.json({ ok: true, status: buildStatus(req.clientId, bucket) });
 });
 
+app.post(apiPath("/login"), (req, res) => {
+  const { password } = req.body || {};
+  if (!AUTH_PASSWORD) {
+    return res.status(500).json({ ok: false, error: "服务端未配置密码" });
+  }
+  if (typeof password !== "string" || password.length === 0) {
+    return res.status(400).json({ ok: false, error: "请输入密码" });
+  }
+  const a = Buffer.from(password);
+  const b = Buffer.from(AUTH_PASSWORD);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return res.status(401).json({ ok: false, error: "密码错误" });
+  }
+  const expireAt = Date.now() + AUTH_MAX_AGE;
+  const cookieValue = signAuth(`${expireAt}`);
+  res.setHeader("Set-Cookie", serializeCookie(AUTH_COOKIE_NAME, cookieValue, AUTH_MAX_AGE));
+  res.json({ ok: true });
+});
+
+app.post(apiPath("/logout"), (req, res) => {
+  res.setHeader("Set-Cookie", serializeCookie(AUTH_COOKIE_NAME, "", 0));
+  res.json({ ok: true });
+});
+
 app.get(apiPath("/status"), (req, res) => {
   const bucket = getClientBucket(req.clientId);
   res.json({ ok: true, status: buildStatus(req.clientId, bucket) });
@@ -1664,6 +1733,10 @@ async function gracefulShutdown() {
 }
 
 async function bootstrap() {
+  if (!AUTH_PASSWORD) {
+    console.error("FATAL: 未设置 MONGOX_PASSWORD 环境变量，拒绝启动");
+    process.exit(1);
+  }
   await loadStore();
   const port = Number(process.env.PORT || 5000);
   server = app.listen(port, '127.0.0.1', () => {

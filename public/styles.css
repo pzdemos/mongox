@@ -189,11 +189,32 @@ p {
 
 .sidebar-toolbar {
   display: flex;
-  justify-content: flex-start;
+  justify-content: space-between;
   align-items: center;
   padding: 10px 12px;
   border-bottom: 1px solid var(--line-light);
   gap: 8px;
+}
+
+.sidebar-logout {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.sidebar-logout:hover {
+  color: var(--danger);
+  background: #f6ddd5;
+  border-color: var(--line);
 }
 
 .sidebar-brand {

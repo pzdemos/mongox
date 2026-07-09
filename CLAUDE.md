@@ -60,6 +60,16 @@ UI 中有三种文档视图模式：表格、JSON、树形（卡片）。还包�
 
 `ecosystem.config.cjs` 用于 PM2 生产部署，默认端口 5000，内存限制 1GB。
 
+**必须设置 `MONGOX_PASSWORD` 环境变量**：server.js 启动时会断言此变量已设，未设置则直接 `process.exit(1)`。该密码用于 Web 登录页（`/login`）的 HMAC cookie 签名。部署流程：
+
+```bash
+# 服务器上一次性 export（或写入 /etc/environment 持久化）
+export MONGOX_PASSWORD='<强密码>'
+pm2 restart mongox --update-env
+```
+
+未登录访问任何 API（除 `/mongo/api/health` 和 `/mongo/api/login`）会返回 401；访问 HTML 页面会重定向到 `/login`。
+
 ## 关键约定
 
 - **界面语言**：UI 文本和错误消息均为中文（zh-CN）

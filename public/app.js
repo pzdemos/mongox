@@ -3303,6 +3303,18 @@ function bindEvents() {
     if (e.key === "Escape") closeIndexContextMenu();
   });
 
+  const logoutBtn = $("logoutBtn");
+  if (logoutBtn) {
+    logoutBtn.addEventListener("click", async () => {
+      try {
+        await fetch(`${API_BASE}/api/logout`, { method: "POST" });
+      } catch {
+        // ignore — cookie cleared server-side best-effort
+      }
+      location.href = "/login";
+    });
+  }
+
   $("terminalRunBtn").addEventListener("click", () => {
     void executeTerminalCommand();
   });
