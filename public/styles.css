@@ -11,6 +11,7 @@
   --danger: #af3b2c;
   --radius: 8px;
   --shadow: 0 1px 3px rgba(40, 24, 9, 0.06);
+  overscroll-behavior-x: none;
 }
 
 * {
@@ -28,7 +29,7 @@ body {
   color: var(--text);
   background: radial-gradient(circle at 12% 8%, #fff8ef 0%, var(--bg) 55%);
   overflow-x: hidden;
-  overscroll-behavior-x: contain;
+  overscroll-behavior-x: none;
 }
 
 .bg-shape {
@@ -267,7 +268,7 @@ body.sidebar-collapsed .sidebar-toggle-btn svg {
 .main-panel {
   padding: 0;
   overflow-y: auto;
-  overscroll-behavior-x: contain;
+  overscroll-behavior-x: none;
 }
 
 .main-topbar {
@@ -1261,7 +1262,7 @@ button.danger {
   position: relative;
   width: 100%;
   overflow: hidden;
-  overscroll-behavior-x: contain;
+  overscroll-behavior-x: none;
 }
 
 .ct-canvas {

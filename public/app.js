@@ -3408,6 +3408,14 @@ async function init() {
   window.addEventListener("popstate", () => {
     history.pushState(null, "", location.href);
   });
+
+  document.addEventListener(
+    "wheel",
+    (e) => {
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) e.preventDefault();
+    },
+    { passive: false, capture: true }
+  );
 }
 
 init().catch((error) => showToast(error.message, true));
