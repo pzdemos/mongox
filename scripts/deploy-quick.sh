@@ -14,8 +14,8 @@ cd "$(dirname "$0")/.."
 REMOTE_HOST="root@121.43.33.235"
 REMOTE_PATH="/var/server/mongox"
 PM2_APP_NAME="mongox"
-PM2_CMD="/root/.nvm/versions/node/v22.22.1/bin/pm2"
 BRANCH="dev"
+# PM2_CMD 在下方动态解析，避免硬编码 nvm 版本路径
 
 # Colors
 GREEN='\033[0;32m'
@@ -26,6 +26,15 @@ NC='\033[0m'
 echo -e "${BLUE}============================================${NC}"
 echo -e "${BLUE}Quick Deploy - MongoDB Admin Web${NC}"
 echo -e "${BLUE}============================================${NC}"
+
+# Resolve pm2 path on remote (avoid hardcoding nvm version path)
+echo -e "${BLUE}→${NC} Resolving pm2 path on remote..."
+PM2_CMD=$(ssh -o ConnectTimeout=5 "$REMOTE_HOST" 'bash -lc "command -v pm2" 2>/dev/null' | awk 'NF{line=$0} END{print line}')
+if [ -z "$PM2_CMD" ]; then
+    echo -e "${RED}✗${NC} pm2 not found on remote (check nvm installation or login shell PATH)"
+    exit 1
+fi
+echo -e "${GREEN}✓${NC} PM2: $PM2_CMD"
 
 # Check if there are changes
 if [ -z "$(git status --porcelain)" ]; then

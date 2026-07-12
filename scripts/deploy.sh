@@ -13,8 +13,8 @@ set -e  # Exit on error
 REMOTE_HOST="root@121.43.33.235"
 REMOTE_PATH="/var/server/mongox"
 PM2_APP_NAME="mongox"
-PM2_CMD="/root/.nvm/versions/node/v22.22.1/bin/pm2"
 BRANCH="dev"
+# PM2_CMD 由 resolve_pm2_cmd() 在运行时解析，避免硬编码 nvm 版本路径
 
 # Colors for output
 RED='\033[0;31m'
@@ -66,6 +66,24 @@ check_git_repo() {
         print_error "Not a git repository!"
         exit 1
     fi
+}
+
+# Resolve pm2 path on remote (avoid hardcoding nvm version path)
+resolve_pm2_cmd() {
+    print_section "Resolving PM2 on remote"
+
+    print_info "Probing pm2 path on $REMOTE_HOST..."
+    if ! PM2_CMD=$(ssh -o ConnectTimeout=5 "$REMOTE_HOST" 'bash -lc "command -v pm2" 2>/dev/null'); then
+        print_error "SSH failed while resolving pm2"
+        exit 1
+    fi
+    # ssh 输出可能混入 profile 的提示文本，取最后一行非空内容并去空白
+    PM2_CMD=$(printf '%s' "$PM2_CMD" | awk 'NF{line=$0} END{print line}')
+    if [ -z "$PM2_CMD" ]; then
+        print_error "pm2 not found on remote — check nvm installation or login shell PATH"
+        exit 1
+    fi
+    print_success "PM2: $PM2_CMD"
 }
 
 # Check for uncommitted changes
@@ -253,6 +271,7 @@ main() {
 
     # Execute workflow
     check_git_repo
+    resolve_pm2_cmd
 
     if check_changes; then
         run_pre_commit_checks
