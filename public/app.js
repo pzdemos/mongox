@@ -3403,6 +3403,11 @@ async function init() {
       duration: 4500,
     });
   }
+
+  history.replaceState(null, "", location.href);
+  window.addEventListener("popstate", () => {
+    history.pushState(null, "", location.href);
+  });
 }
 
 init().catch((error) => showToast(error.message, true));
