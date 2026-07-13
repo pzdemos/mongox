@@ -294,6 +294,16 @@
               导出
             </button>
           </div>
+          <div id="bulkActionBar" class="bulk-bar" hidden>
+            <span class="bulk-bar-count"><span id="bulkCount">0</span> 项已选</span>
+            <div class="bulk-bar-actions">
+              <button id="bulkSelectAllBtn" type="button" class="ghost" title="全选 / 取消全选">全选</button>
+              <button id="bulkCopyIdBtn" type="button" class="ghost" title="复制 _id (JSON 数组)">复制 _id</button>
+              <button id="bulkExportBtn" type="button" class="ghost" title="导出选中行 (按当前格式)">导出选中</button>
+              <button id="bulkDeleteBtn" type="button" class="danger" title="删除选中行">删除选中</button>
+              <button id="bulkClearBtn" type="button" class="ghost" title="清除选择">清除</button>
+            </div>
+          </div>
           <div id="resultsMeta" class="meta"></div>
           <div id="resultsContainer" class="results"></div>
         </section>

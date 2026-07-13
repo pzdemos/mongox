@@ -1560,6 +1560,13 @@ const CT_COLORS = {
   idBadgeBorder: "#decdbb",
   idBadgeText: "#4f3d2d",
   danger: "#c0392b",
+  rowSelected: "#fbeccb",
+  rowSelectedStripe: "#f6e0b6",
+  checkboxStroke: "#7a6b5a",
+  checkboxFill: "#b6791f",
+  checkboxIndeterminate: "#a98a4a",
+  marqueeFill: "rgba(182, 121, 31, 0.14)",
+  marqueeStroke: "#b6791f",
 };
 
 const CT_DEFAULTS = {
@@ -1569,6 +1576,7 @@ const CT_DEFAULTS = {
   idColWidth: 120,
   defaultColWidth: 160,
   actionColWidth: 52,
+  selectColWidth: 34,
   minColWidth: 40,
   maxColWidth: 400,
 };
@@ -1592,6 +1600,7 @@ class CanvasTable {
   constructor(container, options) {
     this.container = container;
     this.onDelete = options.onDelete || (() => {});
+    this.onSelectionChange = options.onSelectionChange || (() => {});
     this.docs = options.docs || [];
     this.displayDocs = options.displayDocs || [];
 
@@ -1616,6 +1625,11 @@ class CanvasTable {
     this.hoverCell = null;
     this.editingCell = null;
     this.previewEl = null;
+
+    this.selectedRows = new Set();
+    this.lastAnchorRow = null;
+    this.selectionDrag = null; // { startRow, currentRow, mode: 'replace' | 'toggle' }
+    this._headerCheckboxRect = null;
 
     this.resizingCol = null;
     this.resizeStartX = 0;
@@ -1652,6 +1666,7 @@ class CanvasTable {
         }
       });
     });
+    cols.push({ key: "__select__", label: "", width: CT_DEFAULTS.selectColWidth });
     if (!seen.has("_id")) {
       cols.push({ key: "_id", label: "_id", width: CT_DEFAULTS.idColWidth });
     }
@@ -1832,6 +1847,10 @@ class CanvasTable {
     return this.cols[col]?.key === "_id";
   }
 
+  _isSelectCol(col) {
+    return this.cols[col]?.key === "__select__";
+  }
+
   scheduleRender() {
     if (!this._dirty) {
       this._dirty = true;
@@ -1879,6 +1898,8 @@ class CanvasTable {
         if (col.key === "__action__") {
           // Draw "+" add button
           this._drawAddBtn(x, 0, col.width, hh);
+        } else if (col.key === "__select__") {
+          this._drawHeaderCheckbox(x, 0, col.width, hh);
         } else {
           ctx.save();
           ctx.beginPath();
@@ -1913,27 +1934,43 @@ class CanvasTable {
     ctx.rect(0, hh, this.width, this.height - hh);
     ctx.clip();
 
+    const dragRange = this._getDragRange();
+
     for (let r = startRow; r < endRow; r++) {
       const ry = hh + r * rh - this.scrollY;
       const isOdd = r % 2 === 1;
+      const isSelected = this.selectedRows.has(r);
+      const inDragRange =
+        dragRange && r >= dragRange.start && r <= dragRange.end;
 
       // Row background
       if (this._isNewRow(r)) {
         ctx.fillStyle = "#effaf3";
+      } else if (isSelected || inDragRange) {
+        ctx.fillStyle = isOdd
+          ? CT_COLORS.rowSelectedStripe
+          : CT_COLORS.rowSelected;
       } else {
         ctx.fillStyle = isOdd ? CT_COLORS.cellBgOdd : CT_COLORS.cellBgEven;
       }
       ctx.fillRect(0, ry, this.width, rh);
 
       // Hover highlight
-      if (this.hoverCell && this.hoverCell.row === r && !this._isActionCol(this.hoverCell.col)) {
+      if (
+        this.hoverCell &&
+        this.hoverCell.row === r &&
+        !this._isActionCol(this.hoverCell.col) &&
+        !this._isSelectCol(this.hoverCell.col) &&
+        !isSelected &&
+        !inDragRange
+      ) {
         ctx.fillStyle = CT_COLORS.hover;
         let hx = -this.scrollX;
         for (let i = 0; i < this.hoverCell.col; i++) hx += this.cols[i].width;
         ctx.fillRect(hx, ry, this.cols[this.hoverCell.col].width, rh);
       }
 
-      // Selection highlight
+      // Selection highlight (single cell focus)
       if (this.selectedCell && this.selectedCell.row === r) {
         const sc = this.selectedCell.col;
         let sx = -this.scrollX;
@@ -1989,6 +2026,18 @@ class CanvasTable {
         this._drawCancelIcon(x + halfW + halfW / 2, y + h / 2);
       } else {
         this._drawDeleteIcon(x + w / 2, y + h / 2);
+      }
+      ctx.restore();
+      return;
+    }
+
+    if (this._isSelectCol(col)) {
+      if (!this._isNewRow(row)) {
+        const checked = this.selectedRows.has(row);
+        const dragRange = this._getDragRange();
+        const inDrag =
+          dragRange && row >= dragRange.start && row <= dragRange.end;
+        this._drawCheckbox(x + w / 2, y + h / 2, checked || (inDrag && this.selectionDrag?.mode === "add"));
       }
       ctx.restore();
       return;
@@ -2082,6 +2131,143 @@ class CanvasTable {
     }
     ctx.fillText(displayText, x + padding, y + h / 2);
     ctx.restore();
+  }
+
+  _drawCheckbox(cx, cy, state) {
+    const ctx = this.ctx;
+    const size = 13;
+    const x = cx - size / 2;
+    const y = cy - size / 2;
+    const r = 3;
+    ctx.save();
+    ctx.lineWidth = 1.2;
+    if (state === "indeterminate") {
+      ctx.fillStyle = CT_COLORS.checkboxIndeterminate;
+      ctx.strokeStyle = CT_COLORS.checkboxIndeterminate;
+    } else if (state) {
+      ctx.fillStyle = CT_COLORS.checkboxFill;
+      ctx.strokeStyle = CT_COLORS.checkboxFill;
+    } else {
+      ctx.fillStyle = "#fffdf8";
+      ctx.strokeStyle = CT_COLORS.checkboxStroke;
+    }
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + size - r, y);
+    ctx.quadraticCurveTo(x + size, y, x + size, y + r);
+    ctx.lineTo(x + size, y + size - r);
+    ctx.quadraticCurveTo(x + size, y + size, x + size - r, y + size);
+    ctx.lineTo(x + r, y + size);
+    ctx.quadraticCurveTo(x, y + size, x, y + size - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    if (state === "indeterminate") {
+      ctx.strokeStyle = "#fffdf8";
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(x + 3.5, cy);
+      ctx.lineTo(x + size - 3.5, cy);
+      ctx.stroke();
+    } else if (state) {
+      ctx.strokeStyle = "#fffdf8";
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(x + 3, cy + 0.5);
+      ctx.lineTo(x + size / 2 - 0.5, cy + 3.5);
+      ctx.lineTo(x + size - 3, cy - 2.5);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  _drawHeaderCheckbox(x, y, w, h) {
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const total = this.docs.length;
+    const sel = this.selectedRows.size;
+    let state = false;
+    if (sel > 0 && sel < total) state = "indeterminate";
+    else if (sel > 0 && sel >= total) state = true;
+    // hit area covers whole header cell so click is forgiving
+    this._headerCheckboxRect = { x, y, w, h };
+    this._drawCheckbox(cx, cy, state);
+  }
+
+  _getDragRange() {
+    if (!this.selectionDrag) return null;
+    const { startRow, currentRow } = this.selectionDrag;
+    return {
+      start: Math.min(startRow, currentRow),
+      end: Math.max(startRow, currentRow),
+    };
+  }
+
+  _notifySelectionChange() {
+    this.onSelectionChange(this.selectedRows.size);
+  }
+
+  selectAll() {
+    this.selectedRows.clear();
+    for (let i = 0; i < this.docs.length; i++) {
+      if (!this._isNewRow(i)) this.selectedRows.add(i);
+    }
+    this.lastAnchorRow = null;
+    this.scheduleRender();
+    this._notifySelectionChange();
+  }
+
+  clearSelection() {
+    this.selectedRows.clear();
+    this.lastAnchorRow = null;
+    this.scheduleRender();
+    this._notifySelectionChange();
+  }
+
+  getSelectedDocs() {
+    const out = [];
+    if (this.selectedRows.size === 0) return out;
+    const rows = [...this.selectedRows].sort((a, b) => a - b);
+    for (const r of rows) {
+      const doc = this.docs[r];
+      if (doc) out.push(doc);
+    }
+    return out;
+  }
+
+  _handleRowSelectClick(row, { shift, ctrl }) {
+    if (this._isNewRow(row)) return;
+    if (shift && this.lastAnchorRow !== null) {
+      const start = Math.min(this.lastAnchorRow, row);
+      const end = Math.max(this.lastAnchorRow, row);
+      for (let i = start; i <= end; i++) {
+        if (!this._isNewRow(i)) this.selectedRows.add(i);
+      }
+    } else if (ctrl || this._isMacCtrl()) {
+      if (this.selectedRows.has(row)) this.selectedRows.delete(row);
+      else this.selectedRows.add(row);
+      this.lastAnchorRow = row;
+    } else {
+      if (this.selectedRows.size === 1 && this.selectedRows.has(row)) {
+        this.selectedRows.clear();
+      } else {
+        this.selectedRows.clear();
+        this.selectedRows.add(row);
+      }
+      this.lastAnchorRow = row;
+    }
+    this.scheduleRender();
+    this._notifySelectionChange();
+  }
+
+  _isMacCtrl() {
+    return false;
   }
 
   _drawDeleteIcon(cx, cy) {
@@ -2210,6 +2396,10 @@ class CanvasTable {
   }
 
   _handleClick(e) {
+    if (this._skipNextClick) {
+      this._skipNextClick = false;
+      return;
+    }
     const pos = this._getMousePos(e);
     const cell = this._hitTest(pos.x, pos.y);
     if (!cell) {
@@ -2217,14 +2407,29 @@ class CanvasTable {
       return;
     }
 
-    // Header click: check "+" add button
+    // Header click
     if (cell.row < 0) {
+      if (this._isSelectCol(cell.col)) {
+        if (this.selectedRows.size > 0) this.clearSelection();
+        else this.selectAll();
+        return;
+      }
       if (this._addBtnRect) {
         const r = this._addBtnRect;
         if (pos.x >= r.x && pos.x <= r.x + r.w && pos.y >= r.y && pos.y <= r.y + r.h) {
           this._startNewRow();
         }
       }
+      return;
+    }
+
+    // Select column click: multi-select with modifiers
+    if (this._isSelectCol(cell.col)) {
+      if (this._isNewRow(cell.row)) return;
+      this._handleRowSelectClick(cell.row, {
+        shift: e.shiftKey,
+        ctrl: e.ctrlKey || e.metaKey,
+      });
       return;
     }
 
@@ -2276,6 +2481,7 @@ class CanvasTable {
     const cell = this._hitTest(pos.x, pos.y);
     if (!cell || cell.row < 0) return;
     if (this._isActionCol(cell.col)) return;
+    if (this._isSelectCol(cell.col)) return;
     // New row: all columns editable (including _id)
     if (!this._isNewRow(cell.row) && this._isIdCol(cell.col)) return;
     this._closePreview();
@@ -2285,6 +2491,35 @@ class CanvasTable {
   _handleMouseMove(e) {
     const pos = this._getMousePos(e);
     const cell = this._hitTest(pos.x, pos.y);
+
+    // Drag-select in progress: update currentRow based on pointer Y
+    if (this.selectionDrag) {
+      const dx = e.clientX - this.selectionDrag.startX;
+      const dy = e.clientY - this.selectionDrag.startY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        this.selectionDrag.moved = true;
+      }
+      // Auto-scroll near top/bottom edges
+      const hh = CT_DEFAULTS.headerHeight;
+      if (pos.y > hh) {
+        const edgeZone = 24;
+        if (pos.y < hh + edgeZone) {
+          this.scrollY = Math.max(0, this.scrollY - 6);
+        } else if (pos.y > this.height - edgeZone) {
+          this.scrollY = Math.min(this.maxScrollY, this.scrollY + 6);
+        }
+      }
+      // Determine current row from Y (independent of X, so user can drag anywhere)
+      if (pos.y > hh) {
+        const rowIdx = Math.floor((pos.y - hh + this.scrollY) / CT_DEFAULTS.rowHeight);
+        const clamped = Math.max(0, Math.min(this.docs.length - 1, rowIdx));
+        if (this.selectionDrag.currentRow !== clamped) {
+          this.selectionDrag.currentRow = clamped;
+          this.scheduleRender();
+        }
+      }
+      return;
+    }
 
     if (this.resizingCol !== null) {
       const dx = e.clientX - this.resizeStartX;
@@ -2306,6 +2541,8 @@ class CanvasTable {
       }
       const boundary = this._colBoundary(pos.x + this.scrollX);
       this.canvas.style.cursor = boundary >= 0 ? "col-resize" : "default";
+    } else if (cell && this._isSelectCol(cell.col)) {
+      this.canvas.style.cursor = "pointer";
     } else if (cell && this._isActionCol(cell.col)) {
       this.canvas.style.cursor = "pointer";
     } else if (cell && this._isNewRow(cell.row)) {
@@ -2333,6 +2570,23 @@ class CanvasTable {
         this.resizeStartWidth = this.cols[boundary].width;
         e.preventDefault();
       }
+      return;
+    }
+    // Start row drag-select from the checkbox column
+    const cell = this._hitTest(pos.x, pos.y);
+    if (cell && cell.row >= 0 && this._isSelectCol(cell.col) && !this._isNewRow(cell.row)) {
+      const wasSelected = this.selectedRows.has(cell.row);
+      const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+      this.selectionDrag = {
+        startRow: cell.row,
+        currentRow: cell.row,
+        mode: wasSelected && !additive ? "remove" : "add",
+        baseSelection: new Set(this.selectedRows),
+        moved: false,
+        startX: e.clientX,
+        startY: e.clientY,
+      };
+      e.preventDefault();
     }
   }
 
@@ -2340,6 +2594,39 @@ class CanvasTable {
     if (this.resizingCol !== null) {
       this.resizingCol = null;
     }
+    if (this.selectionDrag) {
+      const drag = this.selectionDrag;
+      this.selectionDrag = null;
+      if (drag.moved) {
+        // Commit range selection (drag beyond a single row)
+        const range = this._getDragRangeFrom(drag);
+        if (range) {
+          if (drag.mode === "remove") {
+            for (let i = range.start; i <= range.end; i++) {
+              this.selectedRows.delete(i);
+            }
+          } else {
+            // additive: keep base, add range
+            this.selectedRows = new Set(drag.baseSelection);
+            for (let i = range.start; i <= range.end; i++) {
+              if (!this._isNewRow(i)) this.selectedRows.add(i);
+            }
+          }
+          this.lastAnchorRow = range.end;
+          this.scheduleRender();
+          this._notifySelectionChange();
+        }
+        this._skipNextClick = true;
+      }
+    }
+  }
+
+  _getDragRangeFrom(drag) {
+    if (!drag) return null;
+    return {
+      start: Math.min(drag.startRow, drag.currentRow),
+      end: Math.max(drag.startRow, drag.currentRow),
+    };
   }
 
   _handleWheel(e) {
@@ -2388,7 +2675,21 @@ class CanvasTable {
     const t = e.changedTouches[0];
     const pos = { x: t.clientX - rect.left, y: t.clientY - rect.top };
     const cell = this._hitTest(pos.x, pos.y);
-    if (!cell || cell.row < 0) return;
+    if (!cell) return;
+
+    // Tap on header checkbox column: toggle select-all
+    if (cell.row < 0 && this._isSelectCol(cell.col)) {
+      if (this.selectedRows.size > 0) this.clearSelection();
+      else this.selectAll();
+      return;
+    }
+    if (cell.row < 0) return;
+
+    if (this._isSelectCol(cell.col)) {
+      if (this._isNewRow(cell.row)) return;
+      this._handleRowSelectClick(cell.row, { shift: false, ctrl: false });
+      return;
+    }
 
     if (this.editingCell) this._commitInlineEdit();
 
@@ -2426,6 +2727,8 @@ class CanvasTable {
         this.cancelEdit();
       } else if (this.previewEl) {
         this._closePreview();
+      } else if (this.selectedRows.size > 0) {
+        this.clearSelection();
       }
     }
   }
@@ -2583,7 +2886,7 @@ class CanvasTable {
   _findNextEditableCol(row, currentCol, direction) {
     let next = currentCol + direction;
     while (next >= 0 && next < this.cols.length) {
-      if (!this._isActionCol(next) && !this._isIdCol(next)) {
+      if (!this._isActionCol(next) && !this._isIdCol(next) && !this._isSelectCol(next)) {
         return next;
       }
       next += direction;
@@ -2700,6 +3003,20 @@ class CanvasTable {
     if (idx < 0) return;
     this.docs.splice(idx, 1);
     this.displayDocs.splice(idx, 1);
+    // Reindex selection: remove idx, shift any row > idx down by 1
+    if (this.selectedRows.size > 0) {
+      const next = new Set();
+      for (const r of this.selectedRows) {
+        if (r === idx) continue;
+        next.add(r > idx ? r - 1 : r);
+      }
+      this.selectedRows = next;
+      this._notifySelectionChange();
+    }
+    if (this.lastAnchorRow !== null) {
+      if (this.lastAnchorRow === idx) this.lastAnchorRow = null;
+      else if (this.lastAnchorRow > idx) this.lastAnchorRow -= 1;
+    }
     this._updateScrollBounds();
     this.scheduleRender();
   }
@@ -2710,6 +3027,8 @@ class CanvasTable {
     this._cancelNewRow();
     this.cancelEdit();
     this._closePreview();
+    this.selectionDrag = null;
+    this.selectedRows.clear();
     const b = this._bound;
     if (b.resize) window.removeEventListener("resize", b.resize);
     if (b.click) this.canvas.removeEventListener("click", b.click);
@@ -2817,6 +3136,7 @@ function renderResults() {
     canvasTable.destroy();
     canvasTable = null;
   }
+  updateBulkBar(0);
 
   container.innerHTML = "";
   if (!docs.length) {
@@ -2878,7 +3198,9 @@ function renderResults() {
           showToast(error.message, true);
         }
       },
+      onSelectionChange: (count) => updateBulkBar(count),
     });
+    updateBulkBar(0);
   } catch (err) {
     console.error("[CanvasTable] creation error:", err);
     container.innerHTML = `<pre class="result-json">Canvas 渲染失败: ${err.message}\n\n${formatJson(docs.map((d) => toDisplayValue(d)))}</pre>`;
@@ -3164,6 +3486,211 @@ async function handleExport() {
   showToast(`导出成功: ${fileName}`);
 }
 
+function updateBulkBar(count) {
+  const bar = $("bulkActionBar");
+  if (!bar) return;
+  if (count > 0) {
+    bar.hidden = false;
+    $("bulkCount").textContent = String(count);
+  } else {
+    bar.hidden = true;
+  }
+}
+
+function getSelectedDocsFromCanvas() {
+  if (!canvasTable) return [];
+  return canvasTable.getSelectedDocs();
+}
+
+async function handleBulkCopyId() {
+  const docs = getSelectedDocsFromCanvas();
+  if (!docs.length) {
+    showToast("未选择任何行", true);
+    return;
+  }
+  const ids = docs.map((d) => d._id);
+  const text = ids.length === 1 ? formatJson(ids[0]) : formatJson(ids);
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast(`已复制 ${ids.length} 个 _id`);
+  } catch (err) {
+    // Fallback for non-secure contexts
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+      showToast(`已复制 ${ids.length} 个 _id`);
+    } catch (e) {
+      showToast("复制失败：浏览器不支持", true);
+    }
+    ta.remove();
+  }
+}
+
+function bulkDocsToCsv(docs) {
+  if (!docs.length) return "";
+  const keys = [...new Set(docs.flatMap((doc) => Object.keys(doc)))];
+  const esc = (value) => {
+    if (value === undefined || value === null) return "";
+    const text =
+      typeof value === "string" ? value : formatJson(value);
+    return `"${text.replaceAll('"', '""')}"`;
+  };
+  const lines = docs.map((doc) => keys.map((key) => esc(doc[key])).join(","));
+  return `${keys.join(",")}\n${lines.join("\n")}\n`;
+}
+
+async function handleBulkExport() {
+  const docs = getSelectedDocsFromCanvas();
+  if (!docs.length) {
+    showToast("未选择任何行", true);
+    return;
+  }
+  const format = $("exportFormat").value || "json";
+  const displayDocs = docs.map((d) => toDisplayValue(d));
+  let content = "";
+  let mime = "text/plain; charset=utf-8";
+  let ext = format;
+  if (format === "json") {
+    mime = "application/json; charset=utf-8";
+    content = formatJson(displayDocs);
+  } else if (format === "yaml") {
+    mime = "application/x-yaml; charset=utf-8";
+    content = docsToYaml(displayDocs);
+  } else if (format === "csv") {
+    mime = "text/csv; charset=utf-8";
+    content = bulkDocsToCsv(displayDocs);
+    ext = "csv";
+  } else if (format === "ndjson") {
+    mime = "application/x-ndjson; charset=utf-8";
+    content = displayDocs.map((d) => JSON.stringify(d)).join("\n");
+    ext = "ndjson";
+  } else {
+    content = formatJson(displayDocs);
+    ext = "json";
+  }
+
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  a.href = url;
+  a.download = `selected_${stamp}.${ext}`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(`已导出 ${docs.length} 行 → ${ext.toUpperCase()}`);
+}
+
+function docsToYaml(docs) {
+  // Minimal YAML emitter for selected-docs export (no external dep).
+  // Supports nested objects, arrays, strings, numbers, booleans, null.
+  const lines = [];
+  const quoteScalar = (val) => {
+    if (val === null || val === undefined) return "null";
+    if (typeof val === "number") return Number.isFinite(val) ? String(val) : "null";
+    if (typeof val === "boolean") return val ? "true" : "false";
+    if (typeof val === "string") {
+      if (val === "" || /[:#{}\[\],&*?|\-<>=!%@`"\n]/.test(val) || /^\s|\s$/.test(val)) {
+        return JSON.stringify(val);
+      }
+      return val;
+    }
+    return JSON.stringify(val);
+  };
+  const emit = (value, indent) => {
+    if (Array.isArray(value)) {
+      if (value.length === 0) {
+        lines.push(`${indent}[]`);
+        return;
+      }
+      for (const item of value) {
+        if (item !== null && typeof item === "object") {
+          lines.push(`${indent}-`);
+          emit(item, indent + "  ");
+        } else {
+          lines.push(`${indent}- ${quoteScalar(item)}`);
+        }
+      }
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      const entries = Object.entries(value);
+      if (entries.length === 0) {
+        lines.push(`${indent}{}`);
+        return;
+      }
+      for (const [k, v] of entries) {
+        if (v !== null && typeof v === "object") {
+          lines.push(`${indent}${k}:`);
+          emit(v, indent + "  ");
+        } else {
+          lines.push(`${indent}${k}: ${quoteScalar(v)}`);
+        }
+      }
+      return;
+    }
+    lines.push(`${indent}${quoteScalar(value)}`);
+  };
+  if (Array.isArray(docs)) {
+    emit(docs, "");
+  } else {
+    emit(docs, "");
+  }
+  return lines.join("\n") + "\n";
+}
+
+async function handleBulkDelete() {
+  const docs = getSelectedDocsFromCanvas();
+  if (!docs.length) {
+    showToast("未选择任何行", true);
+    return;
+  }
+  const sampleIds = docs
+    .slice(0, 3)
+    .map((d, i) => {
+      const id = typeof d._id === "object" ? formatJson(d._id) : String(d._id);
+      return `  ${i + 1}. ${id}`;
+    })
+    .join("\n");
+  const more = docs.length > 3 ? `\n  ...（共 ${docs.length} 条）` : "";
+  const message =
+    docs.length === 1
+      ? `确认删除以下文档？\n\n${sampleIds}`
+      : `确认删除以下 ${docs.length} 个文档？此操作不可撤销。\n\n${sampleIds}${more}`;
+  if (!window.confirm(message)) return;
+
+  const ids = docs.map((d) => d._id);
+  const filterStr = formatJson({ _id: { $in: ids } });
+  try {
+    const data = await api(`${API_BASE}/api/delete`, {
+      method: "POST",
+      body: JSON.stringify({ filter: filterStr, many: true }),
+    });
+    const deletedCount = data.deletedCount || 0;
+    showToast(`已删除 ${deletedCount} 条`);
+    // Remove all selected rows locally
+    if (canvasTable) {
+      const selectedSet = new Set(canvasTable.selectedRows);
+      // Remove in descending order so indices stay valid
+      const rowsToRemove = [...selectedSet].sort((a, b) => b - a);
+      for (const r of rowsToRemove) {
+        const doc = canvasTable.docs[r];
+        if (doc) canvasTable.removeRow(doc);
+      }
+      canvasTable.clearSelection();
+    }
+    const removedSet = new Set(docs);
+    state.docs = state.docs.filter((d) => !removedSet.has(d));
+    $("resultsMeta").textContent = `结果条数: ${state.docs.length}`;
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
 async function executeTerminalCommand() {
   const input = $("terminalInput");
   const command = input.value.trim();
@@ -3287,6 +3814,18 @@ function bindEvents() {
   });
   $("viewMode").addEventListener("change", renderResults);
   $("exportBtn").addEventListener("click", wrap(handleExport));
+
+  $("bulkSelectAllBtn").addEventListener("click", () => {
+    if (!canvasTable) return;
+    if (canvasTable.selectedRows.size > 0) canvasTable.clearSelection();
+    else canvasTable.selectAll();
+  });
+  $("bulkClearBtn").addEventListener("click", () => {
+    if (canvasTable) canvasTable.clearSelection();
+  });
+  $("bulkCopyIdBtn").addEventListener("click", wrap(handleBulkCopyId));
+  $("bulkExportBtn").addEventListener("click", wrap(handleBulkExport));
+  $("bulkDeleteBtn").addEventListener("click", wrap(handleBulkDelete));
 
   $("insertBtn").addEventListener("click", wrap(handleInsert));
   $("updateBtn").addEventListener("click", wrap(handleUpdate));
