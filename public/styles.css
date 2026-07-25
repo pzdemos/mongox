@@ -792,6 +792,28 @@ body.sidebar-collapsed .main-collapse-btn svg {
   overflow-x: hidden;
 }
 
+/* 桌面端：侧边栏固定高度，集合列表区域内滚动，避免数据表多了溢出屏幕 */
+@media (min-width: 1061px) {
+  .layout {
+    height: 100vh;
+  }
+
+  .side-panel {
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .side-panel-content {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .tree-block {
+    min-height: 0;
+  }
+}
+
 .tree-item {
   border: 0;
   background: transparent;
