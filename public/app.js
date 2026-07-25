@@ -494,21 +494,44 @@ function closeIndexContextMenu() {
   if (menu) menu.hidden = true;
 }
 
+const contextMenuState = { dbName: "", colName: "", activeTab: "indexes" };
+
+function formatBytes(bytes) {
+  if (bytes == null || Number.isNaN(Number(bytes))) return "-";
+  const n = Number(bytes);
+  if (n === 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  const value = n / Math.pow(1024, i);
+  return `${value.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+}
+
+function formatCount(num) {
+  if (num == null || Number.isNaN(Number(num))) return "-";
+  return Number(num).toLocaleString("en-US");
+}
+
 async function showIndexContextMenu(dbName, colName, x, y) {
   const menu = $("indexContextMenu");
   const title = $("indexContextMenuTitle");
   const body = $("indexContextMenuBody");
   if (!menu || !title || !body) return;
 
-  title.textContent = `${colName} · 索引`;
+  contextMenuState.dbName = dbName;
+  contextMenuState.colName = colName;
+  contextMenuState.activeTab = "indexes";
+
+  title.textContent = colName;
+  menu.querySelectorAll(".context-menu-tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.cmTab === "indexes");
+  });
+
   body.innerHTML = '<div class="context-menu-loading">加载中...</div>';
 
-  // Position menu
   menu.hidden = false;
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
 
-  // Adjust for screen boundaries after first render
   requestAnimationFrame(() => {
     const rect = menu.getBoundingClientRect();
     if (rect.right > window.innerWidth - 8) {
@@ -519,54 +542,142 @@ async function showIndexContextMenu(dbName, colName, x, y) {
     }
   });
 
-  try {
-    const data = await api(`${API_BASE}/api/indexes?dbName=${encodeURIComponent(dbName)}&collectionName=${encodeURIComponent(colName)}`);
-    const indexes = data.indexes || [];
-    body.innerHTML = "";
+  await loadContextMenuTab("indexes");
+}
 
-    if (!indexes.length) {
-      body.innerHTML = '<div class="context-menu-empty">无索引</div>';
-      return;
+async function loadContextMenuTab(tab) {
+  const body = $("indexContextMenuBody");
+  if (!body) return;
+  contextMenuState.activeTab = tab;
+
+  body.innerHTML = '<div class="context-menu-loading">加载中...</div>';
+
+  try {
+    if (tab === "indexes") {
+      await renderContextMenuIndexes(body);
+    } else if (tab === "stats") {
+      await renderContextMenuStats(body);
+    }
+  } catch (error) {
+    body.innerHTML = `<div class="context-menu-error">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+async function renderContextMenuIndexes(body) {
+  const { dbName, colName } = contextMenuState;
+  const data = await api(
+    `${API_BASE}/api/indexes?dbName=${encodeURIComponent(dbName)}&collectionName=${encodeURIComponent(colName)}`,
+  );
+  const indexes = data.indexes || [];
+  body.innerHTML = "";
+
+  if (!indexes.length) {
+    body.innerHTML = '<div class="context-menu-empty">无索引</div>';
+    return;
+  }
+
+  indexes.forEach((idx) => {
+    const item = document.createElement("div");
+    item.className = "context-menu-item";
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "context-menu-item-name";
+    nameEl.textContent = idx.name;
+
+    const keyEl = document.createElement("div");
+    keyEl.className = "context-menu-item-key";
+    keyEl.textContent = JSON.stringify(idx.key);
+
+    item.appendChild(nameEl);
+    item.appendChild(keyEl);
+
+    if (idx.unique || idx.sparse) {
+      const tags = document.createElement("div");
+      tags.className = "context-menu-item-tags";
+      if (idx.unique) {
+        const tag = document.createElement("span");
+        tag.className = "context-menu-tag unique";
+        tag.textContent = "unique";
+        tags.appendChild(tag);
+      }
+      if (idx.sparse) {
+        const tag = document.createElement("span");
+        tag.className = "context-menu-tag sparse";
+        tag.textContent = "sparse";
+        tags.appendChild(tag);
+      }
+      item.appendChild(tags);
     }
 
-    indexes.forEach((idx) => {
-      const item = document.createElement("div");
-      item.className = "context-menu-item";
+    body.appendChild(item);
+  });
+}
 
-      const nameEl = document.createElement("div");
-      nameEl.className = "context-menu-item-name";
-      nameEl.textContent = idx.name;
+async function renderContextMenuStats(body) {
+  const { dbName, colName } = contextMenuState;
+  const data = await api(
+    `${API_BASE}/api/collection-stats?dbName=${encodeURIComponent(dbName)}&collectionName=${encodeURIComponent(colName)}`,
+  );
+  const s = data.stats || {};
+  body.innerHTML = "";
 
-      const keyEl = document.createElement("div");
-      keyEl.className = "context-menu-item-key";
-      keyEl.textContent = JSON.stringify(idx.key);
+  // 主要指标
+  const primary = [
+    { label: "文档数量", value: formatCount(s.accurateCount ?? s.estimatedCount) },
+    { label: "数据大小", value: formatBytes(s.size) },
+    { label: "存储大小", value: formatBytes(s.storageSize) },
+    { label: "索引数量", value: formatCount(s.nIndexes) },
+  ];
+  body.appendChild(buildStatsGroup(primary));
 
-      item.appendChild(nameEl);
-      item.appendChild(keyEl);
+  // 详细信息
+  const detail = [
+    { label: "平均文档大小", value: formatBytes(s.avgObjSize) },
+    { label: "索引总大小", value: formatBytes(s.totalIndexSize) },
+    { label: "空闲空间", value: s.freeStorageSize ? formatBytes(s.freeStorageSize) : "-" },
+  ];
+  body.appendChild(buildStatsGroup(detail, "详细信息"));
 
-      if (idx.unique || idx.sparse) {
-        const tags = document.createElement("div");
-        tags.className = "context-menu-item-tags";
-        if (idx.unique) {
-          const tag = document.createElement("span");
-          tag.className = "context-menu-tag unique";
-          tag.textContent = "unique";
-          tags.appendChild(tag);
-        }
-        if (idx.sparse) {
-          const tag = document.createElement("span");
-          tag.className = "context-menu-tag sparse";
-          tag.textContent = "sparse";
-          tags.appendChild(tag);
-        }
-        item.appendChild(tags);
-      }
-
-      body.appendChild(item);
-    });
-  } catch (error) {
-    body.innerHTML = `<div class="context-menu-error">${error.message}</div>`;
+  // 索引大小
+  const indexSizes = s.indexSizes || {};
+  const indexEntries = Object.entries(indexSizes).map(([name, size]) => ({
+    label: name,
+    value: formatBytes(size),
+  }));
+  if (indexEntries.length) {
+    body.appendChild(buildStatsGroup(indexEntries, "索引大小", true));
   }
+}
+
+function buildStatsGroup(entries, heading = null, monoLabel = false) {
+  const group = document.createElement("div");
+  group.className = "stats-group";
+
+  if (heading) {
+    const h = document.createElement("div");
+    h.className = "stats-group-heading";
+    h.textContent = heading;
+    group.appendChild(h);
+  }
+
+  entries.forEach(({ label, value }) => {
+    const row = document.createElement("div");
+    row.className = "stats-row";
+
+    const lab = document.createElement("span");
+    lab.className = "stats-label" + (monoLabel ? " stats-label-mono" : "");
+    lab.textContent = label;
+
+    const val = document.createElement("span");
+    val.className = "stats-value";
+    val.textContent = value;
+
+    row.appendChild(lab);
+    row.appendChild(val);
+    group.appendChild(row);
+  });
+
+  return group;
 }
 
 function renderConnectionList() {
@@ -4041,6 +4152,16 @@ function bindEvents() {
 
   // index context menu close
   $("indexContextMenuClose").addEventListener("click", closeIndexContextMenu);
+  document.querySelectorAll(".context-menu-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const next = tab.dataset.cmTab;
+      if (!next || next === contextMenuState.activeTab) return;
+      document.querySelectorAll(".context-menu-tab").forEach((t) => {
+        t.classList.toggle("active", t === tab);
+      });
+      void loadContextMenuTab(next);
+    });
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeIndexContextMenu();
   });

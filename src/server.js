@@ -1709,6 +1709,65 @@ app.get(
   }),
 );
 
+app.get(
+  apiPath("/collection-stats"),
+  asyncHandler(async (req, res) => {
+    const { runtime, connection } = await requireReadyContext(req, { requireDb: true });
+    const dbName = String(req.query?.dbName || connection.dbName || "").trim();
+    const collectionName = String(req.query?.collectionName || "").trim();
+    if (!dbName) {
+      return res.status(400).json({ ok: false, error: "请先选择数据库" });
+    }
+    if (!collectionName) {
+      return res.status(400).json({ ok: false, error: "集合名不能为空" });
+    }
+
+    const collection = runtime.client.db(dbName).collection(collectionName);
+    const [estimatedCount, accurateCount, collStats] = await Promise.all([
+      collection.estimatedDocumentCount(),
+      collection.countDocuments().catch(() => null),
+      runtime.client
+        .db(dbName)
+        .command({ collStats: collectionName, scale: 1 })
+        .catch(() => null),
+    ]);
+
+    if (!collStats) {
+      return res.json({
+        ok: true,
+        stats: {
+          estimatedCount,
+          accurateCount,
+          size: null,
+          storageSize: null,
+          nIndexes: null,
+          avgObjSize: null,
+          totalIndexSize: null,
+          freeStorageSize: null,
+          capped: null,
+          indexSizes: {},
+        },
+      });
+    }
+
+    res.json({
+      ok: true,
+      stats: {
+        estimatedCount,
+        accurateCount,
+        size: collStats.size ?? null,
+        storageSize: collStats.storageSize ?? null,
+        nIndexes: collStats.nIndexes ?? null,
+        avgObjSize: collStats.avgObjSize ?? null,
+        totalIndexSize: collStats.totalIndexSize ?? null,
+        freeStorageSize: collStats.freeStorageSize ?? null,
+        capped: collStats.capped ?? false,
+        indexSizes: collStats.indexSizes || {},
+      },
+    });
+  }),
+);
+
 app.post(
   apiPath("/export"),
   asyncHandler(async (req, res) => {
