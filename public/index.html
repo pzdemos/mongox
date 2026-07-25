@@ -105,6 +105,23 @@
               </svg>
             </button>
           </div>
+          <div class="tree-search">
+            <input
+              id="treeSearchInput"
+              type="text"
+              placeholder="搜索集合（跨所有数据库）"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button
+              id="treeSearchClearBtn"
+              type="button"
+              class="tree-search-clear"
+              hidden
+              aria-label="清除"
+              title="清除"
+            >&times;</button>
+          </div>
           <div id="dbTree" class="tree-list"></div>
         </section>
         </div>

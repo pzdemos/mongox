@@ -480,6 +480,11 @@ body.sidebar-collapsed .main-collapse-btn svg {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  overflow: visible;
+}
+
+#queryTerminalPanel.collapsed {
+  overflow: visible;
 }
 
 #queryBuilderPanel.collapsed .grid-2,
@@ -884,6 +889,90 @@ body.sidebar-collapsed .main-collapse-btn svg {
   color: var(--muted);
 }
 
+.tree-search {
+  position: relative;
+  margin: 0 0 6px;
+}
+
+.tree-search input {
+  width: 100%;
+  padding: 5px 26px 5px 8px;
+  font-size: 0.78rem;
+  border: 1px solid #ddcfbf;
+  border-radius: 6px;
+  background: #fff8ef;
+  color: var(--text);
+  box-sizing: border-box;
+}
+
+.tree-search input:focus {
+  outline: none;
+  border-color: var(--brand);
+  background: #fffdf8;
+}
+
+.tree-search-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.tree-search-clear:hover {
+  background: #f1e2cf;
+  color: var(--text);
+}
+
+.tree-search-result {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.tree-search-result:hover {
+  background: #f1e2cf;
+}
+
+.tree-search-result-name {
+  font-size: 0.78rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-search-result-name mark {
+  background: #ffe9a8;
+  color: inherit;
+  padding: 0;
+  border-radius: 2px;
+}
+
+.tree-search-result-db {
+  font-size: 0.7rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-search-truncated {
+  padding: 6px 8px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
 .combo-picker {
   border: 1px solid #ddcfbf;
   border-radius: 6px;
@@ -1255,6 +1344,24 @@ button.danger {
   font-size: 0.78rem;
   font-family: "SF Mono", "Menlo", "IBM Plex Mono", monospace;
   padding: 8px;
+}
+
+.result-json .json-key {
+  color: #8c2f5c;
+  font-weight: 600;
+}
+
+.result-json .json-string {
+  color: #3a7a3a;
+}
+
+.result-json .json-num {
+  color: #1a66b8;
+}
+
+.result-json .json-bool {
+  color: #b86a00;
+  font-weight: 600;
 }
 
 /* ── canvas table ── */

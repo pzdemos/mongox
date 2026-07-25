@@ -1451,6 +1451,61 @@ app.get(
   }),
 );
 
+app.get(
+  apiPath("/search-collections"),
+  asyncHandler(async (req, res) => {
+    const { runtime } = await requireReadyContext(req, { requireDb: true });
+    const keyword = String(req.query?.keyword || "").trim().toLowerCase();
+    const limitRaw = parseInt(req.query?.limit, 10);
+    const limit = Number.isInteger(limitRaw)
+      ? Math.min(Math.max(limitRaw, 1), 200)
+      : 100;
+
+    if (!keyword) {
+      return res.json({ ok: true, matches: [], truncated: false });
+    }
+
+    const SYSTEM_DBS = new Set(["admin", "local", "config"]);
+    const matches = [];
+    let truncated = false;
+
+    try {
+      const list = await runtime.client.db("admin").admin().listDatabases({ nameOnly: true });
+      const dbNames = list.databases
+        .map((d) => d.name)
+        .filter((n) => !SYSTEM_DBS.has(n))
+        .sort((left, right) => left.localeCompare(right));
+
+      for (const dbName of dbNames) {
+        if (truncated) break;
+        try {
+          const cols = await runtime.client.db(dbName).listCollections().toArray();
+          for (const col of cols) {
+            if (col.name && col.name.toLowerCase().includes(keyword)) {
+              if (matches.length >= limit) {
+                truncated = true;
+                break;
+              }
+              matches.push({ database: dbName, collection: col.name });
+            }
+          }
+        } catch {
+          // 跳过无权限或异常的数据库
+        }
+      }
+
+      matches.sort((a, b) => {
+        const c = a.collection.localeCompare(b.collection);
+        return c !== 0 ? c : a.database.localeCompare(b.database);
+      });
+
+      res.json({ ok: true, matches, truncated });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: `搜索失败: ${error.message}` });
+    }
+  }),
+);
+
 app.post(
   apiPath("/collection"),
   asyncHandler(async (req, res) => {

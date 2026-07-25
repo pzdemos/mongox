@@ -28,6 +28,11 @@ const state = {
     expandedDbs: new Set(),
     collectionsMap: {},
     busy: false,
+    searchKeyword: "",
+    searchMatches: [],
+    searchTruncated: false,
+    searching: false,
+    searchToken: 0,
   },
 };
 
@@ -192,6 +197,40 @@ function initSidebarCollapseState() {
 
 function formatJson(value) {
   return JSON.stringify(value, null, 2);
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[ch]);
+}
+
+function highlightJson(jsonStr) {
+  const tokenRegex =
+    /("(?:\\.|[^"\\])*")(\s*:)|("(?:\\.|[^"\\])*")|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false|null)\b/g;
+
+  let result = "";
+  let lastIndex = 0;
+  let match;
+  while ((match = tokenRegex.exec(jsonStr)) !== null) {
+    result += escapeHtml(jsonStr.slice(lastIndex, match.index));
+    if (match[1]) {
+      result += `<span class="json-key">${escapeHtml(match[1])}</span>${escapeHtml(match[2])}`;
+    } else if (match[3]) {
+      result += `<span class="json-string">${escapeHtml(match[3])}</span>`;
+    } else if (match[4]) {
+      result += `<span class="json-num">${escapeHtml(match[4])}</span>`;
+    } else if (match[5]) {
+      result += `<span class="json-bool">${escapeHtml(match[5])}</span>`;
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  result += escapeHtml(jsonStr.slice(lastIndex));
+  return result;
 }
 
 function parseEjsonDate(value) {
@@ -638,6 +677,12 @@ function renderDbTree() {
   if (!container) return;
 
   container.innerHTML = "";
+
+  if (state.tree.searchKeyword) {
+    renderTreeSearchResults(container);
+    return;
+  }
+
   const databases = state.tree.databases;
   const currentDb = state.status?.dbName || "";
   const currentCol = state.status?.collectionName || "";
@@ -794,6 +839,164 @@ function renderDbTree() {
 
     container.appendChild(item);
   });
+}
+
+let treeSearchTimer = null;
+
+function setupTreeSearch() {
+  const input = $("treeSearchInput");
+  const clearBtn = $("treeSearchClearBtn");
+  if (!input || !clearBtn) return;
+
+  input.addEventListener("input", () => {
+    clearTimeout(treeSearchTimer);
+    const value = input.value.trim();
+    clearBtn.hidden = !value;
+    state.tree.searchKeyword = value;
+
+    if (!value) {
+      state.tree.searchMatches = [];
+      state.tree.searchTruncated = false;
+      state.tree.searching = false;
+      renderDbTree();
+      return;
+    }
+
+    state.tree.searching = true;
+    renderDbTree();
+    treeSearchTimer = setTimeout(runTreeSearch, 250);
+  });
+
+  clearBtn.addEventListener("click", () => {
+    clearTimeout(treeSearchTimer);
+    input.value = "";
+    clearBtn.hidden = true;
+    state.tree.searchKeyword = "";
+    state.tree.searchMatches = [];
+    state.tree.searchTruncated = false;
+    state.tree.searching = false;
+    renderDbTree();
+    input.focus();
+  });
+}
+
+async function runTreeSearch() {
+  const keyword = state.tree.searchKeyword;
+  if (!keyword) return;
+  const token = ++state.tree.searchToken;
+  try {
+    const data = await api(
+      `${API_BASE}/api/search-collections?keyword=${encodeURIComponent(keyword)}`,
+    );
+    if (token !== state.tree.searchToken) return;
+    state.tree.searchMatches = data.matches || [];
+    state.tree.searchTruncated = !!data.truncated;
+  } catch (error) {
+    if (token !== state.tree.searchToken) return;
+    state.tree.searchMatches = [];
+    showToast(error.message, true);
+  } finally {
+    if (token === state.tree.searchToken) {
+      state.tree.searching = false;
+      renderDbTree();
+    }
+  }
+}
+
+function highlightMatch(text, keyword) {
+  const idx = text.toLowerCase().indexOf(keyword.toLowerCase());
+  if (idx === -1) return escapeHtml(text);
+  const before = escapeHtml(text.slice(0, idx));
+  const hit = escapeHtml(text.slice(idx, idx + keyword.length));
+  const after = escapeHtml(text.slice(idx + keyword.length));
+  return `${before}<mark>${hit}</mark>${after}`;
+}
+
+function renderTreeSearchResults(container) {
+  if (state.tree.searching) {
+    const loading = document.createElement("div");
+    loading.className = "tree-empty";
+    loading.textContent = "搜索中...";
+    container.appendChild(loading);
+    return;
+  }
+
+  const matches = state.tree.searchMatches;
+  if (!matches.length) {
+    const empty = document.createElement("div");
+    empty.className = "tree-empty";
+    empty.textContent = "无匹配集合";
+    container.appendChild(empty);
+    return;
+  }
+
+  matches.forEach(({ database, collection }) => {
+    const row = document.createElement("div");
+    row.className = "tree-search-result";
+
+    const name = document.createElement("span");
+    name.className = "tree-search-result-name";
+    name.innerHTML = highlightMatch(collection, state.tree.searchKeyword);
+
+    const db = document.createElement("span");
+    db.className = "tree-search-result-db";
+    db.textContent = database;
+
+    row.appendChild(name);
+    row.appendChild(db);
+    row.addEventListener("click", () => {
+      void jumpToCollection(database, collection);
+    });
+    container.appendChild(row);
+  });
+
+  if (state.tree.searchTruncated) {
+    const tip = document.createElement("div");
+    tip.className = "tree-search-truncated";
+    tip.textContent = "结果过多，请细化关键词";
+    container.appendChild(tip);
+  }
+}
+
+async function jumpToCollection(dbName, colName) {
+  if (state.tree.busy) return;
+  state.tree.busy = true;
+  try {
+    if (typeof isMobile === "function" && isMobile()) applySidebarCollapsed(true);
+
+    const currentDb = state.status?.dbName || "";
+    if (dbName !== currentDb) {
+      const data = await api(`${API_BASE}/api/database`, {
+        method: "POST",
+        body: JSON.stringify({ dbName }),
+      });
+      setStatus(data.status);
+      state.tree.expandedDbs.add(dbName);
+      state.tree.collectionsMap[dbName] = data.collections || [];
+    }
+
+    const data = await api(`${API_BASE}/api/collection`, {
+      method: "POST",
+      body: JSON.stringify({ collectionName: colName }),
+    });
+    setStatus(data.status);
+    renderDbTree();
+
+    try {
+      const qData = await api(`${API_BASE}/api/query`, {
+        method: "POST",
+        body: JSON.stringify({ filter: "{}", limit: 20 }),
+      });
+      state.docs = qData.docs;
+      renderResults();
+    } catch { /* ignore auto-query error */ }
+
+    await refreshStatus();
+  } catch (error) {
+    showToast(error.message, true);
+  } finally {
+    state.tree.busy = false;
+  }
 }
 
 function renderStatusChip(status) {
@@ -3148,7 +3351,7 @@ function renderResults() {
     const displayDocs = docs.map((doc) => toDisplayValue(doc));
     const pre = document.createElement("pre");
     pre.className = "result-json";
-    pre.textContent = formatJson(displayDocs);
+    pre.innerHTML = highlightJson(formatJson(displayDocs));
     container.appendChild(pre);
     return;
   }
@@ -3925,6 +4128,7 @@ async function init() {
   setActiveTab(activeTab);
   initSidebarCollapseState();
   bindEvents();
+  setupTreeSearch();
   applyQueryInputMode(getSavedQueryInputMode(), { persist: false });
   applyQueryInputCollapsed(getSavedQueryInputCollapsed(), { persist: false });
   renderTerminalContext();
