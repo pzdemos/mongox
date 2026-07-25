@@ -62,20 +62,42 @@ function editingConnection() {
   return findSavedConnection(state.editingConnectionId);
 }
 
+const DEFAULT_URIS = {
+  mongo: "mongodb://127.0.0.1:16016",
+  postgres: "postgresql://user:password@127.0.0.1:5432/postgres",
+  mysql: "mysql://root:password@127.0.0.1:3306/mysql",
+};
+
+const URI_PLACEHOLDERS = {
+  mongo: "mongodb://127.0.0.1:16016",
+  postgres: "postgresql://user:password@host:5432/db",
+  mysql: "mysql://root:password@host:3306/db",
+};
+
 function readConnectionDraft() {
   return {
     name: $("connectionNameInput")?.value.trim() || "",
+    type: $("connectionTypeInput")?.value || "mongo",
     uri: $("uriInput")?.value.trim() || "",
   };
 }
 
 function applyConnectionDraft(connection) {
   $("connectionNameInput").value = connection?.name || "";
+  const type = connection?.type || "mongo";
+  if ($("connectionTypeInput")) $("connectionTypeInput").value = type;
   $("uriInput").value = connection?.uri || "";
+  applyUriPlaceholder(type);
+}
+
+function applyUriPlaceholder(type) {
+  const input = $("uriInput");
+  if (!input) return;
+  input.placeholder = URI_PLACEHOLDERS[type] || URI_PLACEHOLDERS.mongo;
 }
 
 function clearConnectionDraft() {
-  applyConnectionDraft({ name: "", uri: "mongodb://127.0.0.1:16016" });
+  applyConnectionDraft({ name: "", type: "mongo", uri: DEFAULT_URIS.mongo });
 }
 
 function draftMatchesConnection(connection = editingConnection()) {
@@ -83,7 +105,11 @@ function draftMatchesConnection(connection = editingConnection()) {
     return false;
   }
   const draft = readConnectionDraft();
-  return draft.name === (connection.name || "") && draft.uri === (connection.uri || "");
+  return (
+    draft.name === (connection.name || "") &&
+    draft.uri === (connection.uri || "") &&
+    draft.type === (connection.type || "mongo")
+  );
 }
 
 function findSavedConnectionByUri(uri) {
@@ -466,6 +492,37 @@ function setStatus(status) {
   renderTerminalContext();
   updateConnectToggle(status);
   renderConnectionList();
+  applyDriverTypeToForms(status?.driverType || "mongo");
+}
+
+function applyDriverTypeToForms(type) {
+  const isSql = type === "postgres" || type === "mysql";
+
+  const labelMap = [
+    { id: "queryFilter", sql: "WHERE 子句（可空）", mongo: "Filter (JSON/EJSON)" },
+    { id: "queryProjection", sql: "查询字段（逗号分隔，可空）", mongo: "Projection (JSON/EJSON, 可选)" },
+    { id: "querySort", sql: "ORDER BY（可空，如 id DESC）", mongo: "Sort (JSON/EJSON, 可选)" },
+    { id: "insertDoc", sql: "行数据 (JSON 对象，列名→值)", mongo: "Document (JSON/EJSON)" },
+    { id: "updateFilter", sql: "WHERE 条件", mongo: "Filter (JSON/EJSON)" },
+    { id: "updateDoc", sql: "SET (JSON，列名→值)", mongo: "Update (JSON/EJSON)" },
+    { id: "deleteFilter", sql: "WHERE 条件", mongo: "Filter (JSON/EJSON)" },
+  ];
+
+  labelMap.forEach(({ id, sql, mongo }) => {
+    const input = $(id);
+    if (!input) return;
+    const label = input.closest("label");
+    if (label && label.firstChild && label.firstChild.nodeType === Node.TEXT_NODE) {
+      label.firstChild.textContent = isSql ? sql : mongo;
+    }
+    if (id === "queryFilter") input.placeholder = isSql ? "例如：id > 100 AND status = 'active'" : "{}";
+    if (id === "querySort") input.placeholder = isSql ? "例如：created_at DESC" : "";
+  });
+
+  const termInput = $("terminalInput");
+  if (termInput) {
+    termInput.placeholder = isSql ? "SELECT * FROM users LIMIT 10" : "db.getCollection('temp').find({})";
+  }
 }
 
 function clearWorkspaceState() {
@@ -735,21 +792,31 @@ function renderConnectionList() {
     title.className = "connection-item-title";
     title.textContent = connection.name || "未命名连接";
 
+    const typeChip = document.createElement("span");
+    typeChip.className = `driver-chip driver-chip-${connection.type || "mongo"}`;
+    typeChip.textContent = (connection.type || "mongo").toUpperCase();
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "connection-item-title-wrap";
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(typeChip);
+
     const badge = document.createElement("span");
     badge.className = `connection-badge${connection.connected ? " connected" : ""}`;
     badge.textContent = connection.connected ? "在线" : "离线";
 
-    header.appendChild(title);
+    header.appendChild(titleWrap);
     header.appendChild(badge);
 
     const uri = document.createElement("div");
     uri.className = "connection-item-uri";
     uri.textContent = connection.uriMasked || connection.uri || "";
 
+    const isSql = connection.type === "postgres" || connection.type === "mysql";
     const metaLine = document.createElement("div");
     metaLine.className = "connection-item-meta";
     metaLine.textContent = `${connection.dbName || "未选库"} / ${
-      connection.collectionName || "未选集合"
+      connection.collectionName || (isSql ? "未选表" : "未选集合")
     }`;
 
     const actions = document.createElement("div");
@@ -875,10 +942,12 @@ function renderDbTree() {
       const colList = document.createElement("div");
       colList.className = "tree-collections";
       const collections = state.tree.collectionsMap[dbName] || [];
+      const isSql =
+        state.status?.driverType === "postgres" || state.status?.driverType === "mysql";
       if (collections.length === 0) {
         const empty = document.createElement("div");
         empty.className = "tree-empty";
-        empty.textContent = "无集合";
+        empty.textContent = isSql ? "无表" : "无集合";
         colList.appendChild(empty);
       } else {
         collections.forEach((colName) => {
@@ -1417,17 +1486,20 @@ function renderTerminalContext() {
   }
 
   const status = state.status || {};
+  const isSql = status.driverType === "postgres" || status.driverType === "mysql";
   if (!status.connected) {
     context.textContent = status.connectionName || "未连接";
-    prompt.textContent = "db.(collection)>";
+    prompt.textContent = isSql ? "sql>" : "db.(collection)>";
     return;
   }
 
   const host = terminalHostFromUri(status.uri);
   const dbName = status.dbName || "(未选库)";
-  const collectionName = status.collectionName || "(未选集合)";
+  const collectionName = status.collectionName || "(未选表)";
   context.textContent = `${host}  ·  ${dbName}  ·  ${collectionName}`;
-  prompt.textContent = `${dbName}.${collectionName}>`;
+  prompt.textContent = isSql
+    ? `${status.driverType}>`
+    : `${dbName}.${collectionName}>`;
 }
 
 function trimTerminalPayload(text, maxLength = 30000) {
@@ -3544,6 +3616,7 @@ async function saveConnectionDraft({ quiet = false } = {}) {
     body: JSON.stringify({
       id: shouldUpdateExisting ? draftContext.boundConnection.id : undefined,
       name: draft.name,
+      type: draft.type || "mongo",
       uri: draft.uri,
     }),
   });
@@ -3640,6 +3713,16 @@ async function handleNewConnectionDraft() {
 }
 
 function readQueryPayload() {
+  const isSql =
+    state.status?.driverType === "postgres" || state.status?.driverType === "mysql";
+  if (isSql) {
+    return {
+      where: $("queryFilter").value.trim(),
+      projection: $("queryProjection").value.trim(),
+      orderBy: $("querySort").value.trim(),
+      limit: Number($("queryLimit").value || 20),
+    };
+  }
   return {
     filter: $("queryFilter").value.trim(),
     projection: $("queryProjection").value.trim(),
@@ -3727,22 +3810,40 @@ async function handleInsert() {
       method: "POST",
       body: JSON.stringify({ doc }),
     });
-    showToast(`插入成功: ${JSON.stringify(data.insertedId)}`);
+    const isSql =
+      state.status?.driverType === "postgres" || state.status?.driverType === "mysql";
+    if (isSql) {
+      showToast(`插入成功: ${data.inserted || 0} 行`);
+    } else {
+      showToast(`插入成功: ${JSON.stringify(data.insertedId)}`);
+    }
   });
 }
 
 async function handleUpdate() {
   await runWithLoading("update", "updateBtn", "更新中...", async () => {
+    const isSql =
+      state.status?.driverType === "postgres" || state.status?.driverType === "mysql";
+    const body = isSql
+      ? {
+          where: $("updateFilter").value.trim(),
+          setDoc: $("updateDoc").value.trim(),
+        }
+      : {
+          filter: $("updateFilter").value.trim(),
+          update: $("updateDoc").value.trim(),
+          many: $("updateMany").checked,
+          upsert: $("updateUpsert").checked,
+        };
     const data = await api(`${API_BASE}/api/update`, {
       method: "POST",
-      body: JSON.stringify({
-        filter: $("updateFilter").value.trim(),
-        update: $("updateDoc").value.trim(),
-        many: $("updateMany").checked,
-        upsert: $("updateUpsert").checked,
-      }),
+      body: JSON.stringify(body),
     });
-    showToast(`更新完成: matched ${data.matchedCount}, modified ${data.modifiedCount}`);
+    if (isSql) {
+      showToast(`更新完成: ${data.updated || 0} 行`);
+    } else {
+      showToast(`更新完成: matched ${data.matchedCount}, modified ${data.modifiedCount}`);
+    }
   });
 }
 
@@ -3752,14 +3853,16 @@ async function handleDelete() {
     return;
   }
   await runWithLoading("delete", "deleteBtn", "删除中...", async () => {
+    const isSql =
+      state.status?.driverType === "postgres" || state.status?.driverType === "mysql";
+    const body = isSql
+      ? { where: $("deleteFilter").value.trim() }
+      : { filter: $("deleteFilter").value.trim(), many: $("deleteMany").checked };
     const data = await api(`${API_BASE}/api/delete`, {
       method: "POST",
-      body: JSON.stringify({
-        filter: $("deleteFilter").value.trim(),
-        many: $("deleteMany").checked,
-      }),
+      body: JSON.stringify(body),
     });
-    showToast(`删除完成: ${data.deletedCount} 条`);
+    showToast(`删除完成: ${isSql ? data.deleted : data.deletedCount} 条`);
   });
 }
 
@@ -4083,6 +4186,14 @@ function bindEvents() {
       renderStatusChip(state.status || { connected: false, dbName: "", collectionName: "" });
       updateConnectToggle(state.status);
     });
+  });
+  $("connectionTypeInput").addEventListener("change", (e) => {
+    const type = e.target.value || "mongo";
+    applyUriPlaceholder(type);
+    const cur = $("uriInput").value.trim();
+    const isDefault = Object.values(DEFAULT_URIS).includes(cur);
+    if (isDefault) $("uriInput").value = DEFAULT_URIS[type];
+    renderConnectionList();
   });
   $("sidebarToggleBtn").addEventListener("click", () => {
     const next = !document.body.classList.contains("sidebar-collapsed");

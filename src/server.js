@@ -9,6 +9,8 @@ import yaml from "js-yaml";
 import JSON5 from "json5";
 import { EJSON } from "bson";
 import { MongoClient } from "mongodb";
+import { PostgresDriver } from "./drivers/postgres.js";
+import { MysqlDriver } from "./drivers/mysql.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -159,9 +161,12 @@ app.use((req, res, next) => {
 });
 
 function normalizeConnectionRecord(record = {}) {
+  const typeRaw = String(record.type || "mongo").trim().toLowerCase();
+  const type = ["mongo", "postgres", "mysql"].includes(typeRaw) ? typeRaw : "mongo";
   return {
     id: String(record.id || crypto.randomUUID()),
     name: String(record.name || "").trim(),
+    type,
     uri: String(record.uri || "").trim(),
     dbName: String(record.dbName || "").trim(),
     collectionName: String(record.collectionName || "").trim(),
@@ -226,14 +231,16 @@ function listConnections(bucket) {
   });
 }
 
-function inferConnectionName(uri, fallback = "未命名连接") {
+function inferConnectionName(uri, type = "mongo", fallback = "未命名连接") {
   if (!uri) {
     return fallback;
   }
   try {
     const parsed = new URL(uri);
     const host = parsed.host || parsed.hostname;
-    return host ? `Mongo @ ${host}` : fallback;
+    if (!host) return fallback;
+    const label = type === "postgres" ? "PG" : type === "mysql" ? "MySQL" : "Mongo";
+    return `${label} @ ${host}`;
   } catch {
     return fallback;
   }
@@ -296,6 +303,10 @@ async function disconnectRuntime(clientId, connectionId) {
     if (bucket.size === 0) {
       runtimeStore.delete(clientId);
     }
+  }
+  if (runtime?.driver) {
+    await runtime.driver.disconnect().catch(() => {});
+    return;
   }
   await closeMongoClient(runtime?.client);
 }
@@ -466,9 +477,25 @@ async function connectWithAdaptiveRetry(uri) {
 }
 
 async function pingRuntime(runtime) {
-  if (!runtime?.client) {
-    return false;
+  if (!runtime) return false;
+  if (runtime.driver) {
+    const now = Date.now();
+    if (runtime.lastPingAt && now - runtime.lastPingAt < 10000) return true;
+    try {
+      if (runtime.driver.type === "postgres") {
+        await runtime.driver.pool.query("SELECT 1");
+      } else if (runtime.driver.type === "mysql") {
+        await runtime.driver.pool.query("SELECT 1");
+      } else {
+        return false;
+      }
+      runtime.lastPingAt = now;
+      return true;
+    } catch {
+      return false;
+    }
   }
+  if (!runtime.client) return false;
 
   const now = Date.now();
   if (runtime.lastPingAt && now - runtime.lastPingAt < 10000) {
@@ -501,6 +528,22 @@ async function ensureRuntimeConnected(clientId, connection, { persist = true } =
 
   const task = (async () => {
     await disconnectRuntime(clientId, connection.id);
+
+    if (connection.type === "postgres" || connection.type === "mysql") {
+      const Driver = connection.type === "postgres" ? PostgresDriver : MysqlDriver;
+      const driver = new Driver(connection.uri);
+      await driver.connect();
+      const runtime = { driver, lastPingAt: Date.now() };
+      setRuntime(clientId, connection.id, runtime);
+      if (!connection.dbName) connection.dbName = driver.dbName || "";
+      connection.lastConnectedAt = nowIso();
+      connection.lastUsedAt = connection.lastConnectedAt;
+      if (persist) {
+        await persistStore();
+      }
+      return { runtime, adapted: false, reason: null };
+    }
+
     const connected = await connectWithAdaptiveRetry(connection.uri);
     const runtime = { client: connected.client, lastPingAt: Date.now() };
     setRuntime(clientId, connection.id, runtime);
@@ -540,11 +583,12 @@ function buildConnectionSummary(clientId, connection, bucket) {
   return {
     id: connection.id,
     name: connection.name,
+    type: connection.type,
     uri: connection.uri,
     uriMasked: maskMongoUri(connection.uri),
     dbName: connection.dbName || "",
     collectionName: connection.collectionName || "",
-    connected: Boolean(runtime?.client),
+    connected: Boolean(runtime?.client || runtime?.driver),
     isActive: bucket.activeConnectionId === connection.id,
     createdAt: connection.createdAt,
     updatedAt: connection.updatedAt,
@@ -556,6 +600,7 @@ function buildConnectionSummary(clientId, connection, bucket) {
 function buildStatus(clientId, bucket) {
   const empty = {
     connected: false,
+    driverType: "mongo",
     activeConnectionId: bucket.activeConnectionId || null,
     connectionName: "",
     uri: "",
@@ -575,7 +620,8 @@ function buildStatus(clientId, bucket) {
 
   const runtime = getRuntime(clientId, active.id);
   return {
-    connected: Boolean(runtime?.client),
+    connected: Boolean(runtime?.client || runtime?.driver),
+    driverType: active.type || "mongo",
     activeConnectionId: active.id,
     connectionName: active.name,
     uri: active.uri,
@@ -1322,7 +1368,10 @@ app.post(
       return res.status(400).json({ ok: false, error: "连接字符串不能为空" });
     }
 
-    const name = String(req.body?.name || "").trim() || inferConnectionName(uri);
+    const typeRaw = String(req.body?.type || "mongo").trim().toLowerCase();
+    const type = ["mongo", "postgres", "mysql"].includes(typeRaw) ? typeRaw : "mongo";
+
+    const name = String(req.body?.name || "").trim() || inferConnectionName(uri, type);
     let connection = bucket.activeConnectionId
       ? findConnection(bucket, bucket.activeConnectionId)
       : null;
@@ -1336,12 +1385,14 @@ app.post(
         id: crypto.randomUUID(),
         name,
         uri,
+        type,
       });
       bucket.connections.push(connection);
       bucket.activeConnectionId = connection.id;
     } else {
       connection.name = name || connection.name;
       connection.uri = uri;
+      connection.type = type;
       connection.updatedAt = nowIso();
     }
 
@@ -1373,6 +1424,26 @@ app.get(
   apiPath("/databases"),
   asyncHandler(async (req, res) => {
     const { connection, runtime } = await requireReadyContext(req);
+    if (runtime.driver) {
+      try {
+        const list = await runtime.driver.listDatabases();
+        const databases = list
+          .map((d) => ({ name: d.name, sizeOnDisk: null }))
+          .sort((l, r) => l.name.localeCompare(r.name));
+        if (!connection.dbName && databases.length) {
+          connection.dbName = databases[0].name;
+          connection.updatedAt = nowIso();
+          await persistStore();
+        }
+        return res.json({ ok: true, databases, warning: null });
+      } catch (error) {
+        return res.json({
+          ok: true,
+          databases: [],
+          warning: `无法列出数据库。原因: ${error.message}`,
+        });
+      }
+    }
     try {
       const list = await runtime.client.db("admin").admin().listDatabases({ nameOnly: true });
       const databases = list.databases
@@ -1413,10 +1484,15 @@ app.post(
     let collections = [];
     let warning = null;
     try {
-      const result = await runtime.client.db(connection.dbName).listCollections().toArray();
-      collections = result.map((item) => item.name).sort((left, right) => left.localeCompare(right));
+      if (runtime.driver) {
+        const tables = await runtime.driver.listTables(dbName);
+        collections = tables.map((t) => t.name).sort((l, r) => l.localeCompare(r));
+      } else {
+        const result = await runtime.client.db(connection.dbName).listCollections().toArray();
+        collections = result.map((item) => item.name).sort((left, right) => left.localeCompare(right));
+      }
     } catch (error) {
-      warning = `无法列出集合，请手动输入集合名。原因: ${error.message}`;
+      warning = `无法列出${runtime.driver ? "表" : "集合"}，请手动输入。原因: ${error.message}`;
     }
 
     await persistStore();
@@ -1438,16 +1514,18 @@ app.get(
     let warning = null;
 
     try {
-      collections = await runtime.client.db(connection.dbName).listCollections().toArray();
+      if (runtime.driver) {
+        const tables = await runtime.driver.listTables(connection.dbName);
+        collections = tables.map((t) => t.name).sort((l, r) => l.localeCompare(r));
+      } else {
+        collections = await runtime.client.db(connection.dbName).listCollections().toArray();
+        collections = collections.map((item) => item.name).sort((l, r) => l.localeCompare(r));
+      }
     } catch (error) {
-      warning = `无法列出集合，请手动输入集合名。原因: ${error.message}`;
+      warning = `无法列出${runtime.driver ? "表" : "集合"}，请手动输入。原因: ${error.message}`;
     }
 
-    res.json({
-      ok: true,
-      collections: collections.map((item) => item.name).sort((left, right) => left.localeCompare(right)),
-      warning,
-    });
+    res.json({ ok: true, collections, warning });
   }),
 );
 
@@ -1456,14 +1534,24 @@ app.get(
   asyncHandler(async (req, res) => {
     const { runtime } = await requireReadyContext(req, { requireDb: true });
     const keyword = String(req.query?.keyword || "").trim().toLowerCase();
-    const limitRaw = parseInt(req.query?.limit, 10);
-    const limit = Number.isInteger(limitRaw)
-      ? Math.min(Math.max(limitRaw, 1), 200)
-      : 100;
 
     if (!keyword) {
       return res.json({ ok: true, matches: [], truncated: false });
     }
+
+    if (runtime.driver) {
+      try {
+        const { matches, truncated } = await runtime.driver.searchTables(keyword);
+        return res.json({ ok: true, matches, truncated });
+      } catch (error) {
+        return res.status(500).json({ ok: false, error: `搜索失败: ${error.message}` });
+      }
+    }
+
+    const limitRaw = parseInt(req.query?.limit, 10);
+    const limit = Number.isInteger(limitRaw)
+      ? Math.min(Math.max(limitRaw, 1), 200)
+      : 100;
 
     const SYSTEM_DBS = new Set(["admin", "local", "config"]);
     const matches = [];
@@ -1532,6 +1620,19 @@ app.post(
       return res.status(400).json({ ok: false, error: "命令不能为空" });
     }
 
+    if (runtime.driver) {
+      const result = await runtime.driver.runCommand(command);
+      connection.updatedAt = nowIso();
+      connection.lastUsedAt = nowIso();
+      await persistStore();
+      return res.json({
+        ok: true,
+        status: buildStatus(req.clientId, bucket),
+        command,
+        ...result,
+      });
+    }
+
     const result = await runTerminalCommand(command, runtime, connection);
     connection.updatedAt = nowIso();
     connection.lastUsedAt = nowIso();
@@ -1553,6 +1654,16 @@ app.post(
       requireDb: true,
       requireCollection: true,
     });
+
+    if (runtime.driver) {
+      const result = await runtime.driver.query(connection.dbName, connection.collectionName, {
+        where: String(req.body?.where || req.body?.filter || "").trim(),
+        orderBy: String(req.body?.orderBy || req.body?.sort || "").trim(),
+        limit: Number(req.body?.limit ?? 20),
+      });
+      return res.json({ ok: true, count: result.docs.length, docs: result.docs, sql: result.sql });
+    }
+
     const filter = parseEjsonInput(req.body?.filter, {});
     const projection = parseEjsonInput(req.body?.projection, undefined);
     const sort = parseEjsonInput(req.body?.sort, undefined);
@@ -1581,6 +1692,17 @@ app.post(
       requireDb: true,
       requireCollection: true,
     });
+
+    if (runtime.driver) {
+      const doc = req.body?.doc;
+      const parsed = typeof doc === "string" ? safeJsonParse(doc) : doc;
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+        return res.status(400).json({ ok: false, error: "插入内容必须是 JSON 对象" });
+      }
+      const result = await runtime.driver.insert(connection.dbName, connection.collectionName, parsed);
+      return res.json({ ok: true, inserted: result.inserted, returning: result.returning || [] });
+    }
+
     const doc = parseEjsonInput(req.body?.doc);
     if (!doc || Array.isArray(doc) || typeof doc !== "object") {
       return res.status(400).json({ ok: false, error: "插入内容必须是对象类型文档" });
@@ -1601,6 +1723,21 @@ app.post(
       requireDb: true,
       requireCollection: true,
     });
+
+    if (runtime.driver) {
+      const where = String(req.body?.where || req.body?.filter || "").trim();
+      let setDoc = req.body?.setDoc || req.body?.update;
+      if (typeof setDoc === "string") setDoc = safeJsonParse(setDoc);
+      if (!setDoc || typeof setDoc !== "object" || Array.isArray(setDoc)) {
+        return res.status(400).json({ ok: false, error: "SET 内容必须是 JSON 对象" });
+      }
+      const result = await runtime.driver.update(connection.dbName, connection.collectionName, {
+        where,
+        setDoc,
+      });
+      return res.json({ ok: true, updated: result.updated });
+    }
+
     const filter = parseEjsonInput(req.body?.filter, {});
     const many = Boolean(req.body?.many);
     const upsert = Boolean(req.body?.upsert);
@@ -1636,6 +1773,15 @@ app.post(
       requireDb: true,
       requireCollection: true,
     });
+
+    if (runtime.driver) {
+      const where = String(req.body?.where || req.body?.filter || "").trim();
+      const result = await runtime.driver.delete(connection.dbName, connection.collectionName, {
+        where,
+      });
+      return res.json({ ok: true, deleted: result.deleted });
+    }
+
     const filter = parseEjsonInput(req.body?.filter, {});
     const many = Boolean(req.body?.many);
     const collection = getCollection(runtime, connection);
@@ -1645,6 +1791,18 @@ app.post(
     res.json({ ok: true, deletedCount: result.deletedCount });
   }),
 );
+
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch (e1) {
+    try {
+      return JSON5.parse(text);
+    } catch {
+      throw e1;
+    }
+  }
+}
 
 app.get(
   apiPath("/stats"),
@@ -1693,7 +1851,12 @@ app.get(
       return res.status(400).json({ ok: false, error: "请先选择数据库" });
     }
     if (!collectionName) {
-      return res.status(400).json({ ok: false, error: "集合名不能为空" });
+      return res.status(400).json({ ok: false, error: "表名不能为空" });
+    }
+
+    if (runtime.driver) {
+      const indexes = await runtime.driver.indexes(dbName, collectionName);
+      return res.json({ ok: true, indexes });
     }
 
     const indexes = await runtime.client.db(dbName).collection(collectionName).indexes();
@@ -1719,7 +1882,12 @@ app.get(
       return res.status(400).json({ ok: false, error: "请先选择数据库" });
     }
     if (!collectionName) {
-      return res.status(400).json({ ok: false, error: "集合名不能为空" });
+      return res.status(400).json({ ok: false, error: "表名不能为空" });
+    }
+
+    if (runtime.driver) {
+      const stats = await runtime.driver.stats(dbName, collectionName);
+      return res.json({ ok: true, stats });
     }
 
     const collection = runtime.client.db(dbName).collection(collectionName);

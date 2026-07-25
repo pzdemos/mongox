@@ -910,6 +910,45 @@ body.sidebar-collapsed .main-collapse-btn svg {
   color: var(--muted);
 }
 
+.connection-item-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.driver-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  background: #f2e8dc;
+  color: #6e5b46;
+}
+
+.driver-chip-mongo {
+  background: #ddf5ee;
+  color: var(--brand-2);
+  border-color: #b9dfcc;
+}
+
+.driver-chip-postgres {
+  background: #dbe9f7;
+  color: #2a5b8a;
+  border-color: #a8c8e8;
+}
+
+.driver-chip-mysql {
+  background: #fce4cf;
+  color: #8a4a1a;
+  border-color: #e8c098;
+}
+
 .tree-search {
   position: relative;
   margin: 0 0 6px;
