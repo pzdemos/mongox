@@ -2577,17 +2577,10 @@ class CanvasTable {
       for (let i = start; i <= end; i++) {
         if (!this._isNewRow(i)) this.selectedRows.add(i);
       }
-    } else if (ctrl || this._isMacCtrl()) {
+    } else {
+      // 普通点击 / ctrl+click 都按 toggle 处理（复选框语义）
       if (this.selectedRows.has(row)) this.selectedRows.delete(row);
       else this.selectedRows.add(row);
-      this.lastAnchorRow = row;
-    } else {
-      if (this.selectedRows.size === 1 && this.selectedRows.has(row)) {
-        this.selectedRows.clear();
-      } else {
-        this.selectedRows.clear();
-        this.selectedRows.add(row);
-      }
       this.lastAnchorRow = row;
     }
     this.scheduleRender();
