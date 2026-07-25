@@ -561,6 +561,20 @@ async function loadContextMenuTab(tab) {
   } catch (error) {
     body.innerHTML = `<div class="context-menu-error">${escapeHtml(error.message)}</div>`;
   }
+
+  requestAnimationFrame(clampContextMenuPosition);
+}
+
+function clampContextMenuPosition() {
+  const menu = $("indexContextMenu");
+  if (!menu || menu.hidden) return;
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth - 8) {
+    menu.style.left = `${Math.max(8, window.innerWidth - rect.width - 8)}px`;
+  }
+  if (rect.bottom > window.innerHeight - 8) {
+    menu.style.top = `${Math.max(8, window.innerHeight - rect.height - 8)}px`;
+  }
 }
 
 async function renderContextMenuIndexes(body) {
