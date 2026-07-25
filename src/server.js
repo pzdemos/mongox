@@ -1232,22 +1232,27 @@ app.post(
       return res.status(400).json({ ok: false, error: "连接字符串不能为空" });
     }
 
+    const typeRaw = String(req.body?.type || "mongo").trim().toLowerCase();
+    const type = ["mongo", "postgres", "mysql"].includes(typeRaw) ? typeRaw : "mongo";
+
     const id = req.body?.id ? String(req.body.id) : null;
     const existing = id
       ? findConnection(bucket, id)
       : findConnectionByUri(bucket, uri);
     const name =
-      String(req.body?.name || "").trim() || existing?.name || inferConnectionName(uri);
+      String(req.body?.name || "").trim() || existing?.name || inferConnectionName(uri, type);
 
     const now = nowIso();
     if (existing) {
       existing.name = name;
       existing.uri = uri;
+      existing.type = type;
       existing.updatedAt = now;
     } else {
       const next = normalizeConnectionRecord({
         id: crypto.randomUUID(),
         name,
+        type,
         uri,
         createdAt: now,
         updatedAt: now,
