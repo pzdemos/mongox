@@ -118,8 +118,13 @@ export class MysqlDriver {
     );
     const count = Number(countRows[0]?.c ?? 0);
 
+    // MariaDB 把 information_schema 列名返回为大写，MySQL 8 也是大写；统一用别名归一化
     const [statRows] = await this.pool.query(
-      `SELECT * FROM information_schema.tables
+      `SELECT
+         data_length AS data_length,
+         index_length AS index_length,
+         data_free AS data_free
+       FROM information_schema.tables
        WHERE table_schema = ? AND table_name = ?`,
       [dbName, table],
     );

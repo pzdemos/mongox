@@ -6,6 +6,7 @@ import {
   parseLimit,
   quoteIdentPg,
   normalizeRow,
+  assertSingleStatement,
 } from "./sql-base.js";
 
 const SYSTEM_DBS = new Set(["template0", "template1", "postgres"]);
@@ -182,7 +183,7 @@ export class PostgresDriver {
   }
 
   async runCommand(text) {
-    const trimmed = String(text || "").trim();
+    const trimmed = assertSingleStatement(String(text || ""));
     if (!trimmed) throw new Error("SQL 不能为空");
     const res = await this.pool.query(trimmed);
     if (res.rows && res.rows.length) {
