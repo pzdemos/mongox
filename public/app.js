@@ -519,6 +519,19 @@ function applyDriverTypeToForms(type) {
     { id: "deleteFilter", sql: "WHERE 条件", mongo: "Filter (JSON/EJSON)" },
   ];
 
+  // Mongo → SQL 切换时，把残留的 Mongo 占位符（{} / 空对象）清掉，避免拼出 WHERE {} 语法错
+  const MONGO_PLACEHOLDER_VALUES = new Set(["{}", "[]", ""]);
+  const MONGO_DEFAULT_DOC = `{
+  "name": "demo",
+  "createdAt": {"$date":"2026-01-01T00:00:00Z"}
+}`;
+  const MONGO_DEFAULT_UPDATE = `{
+  "$set": {
+    "updatedAt": {"$date":"2026-01-01T00:00:00Z"}
+  }
+}`;
+  const fieldsToClear = ["queryFilter", "queryProjection", "querySort", "updateFilter"];
+
   labelMap.forEach(({ id, sql, mongo }) => {
     const input = $(id);
     if (!input) return;
@@ -528,6 +541,25 @@ function applyDriverTypeToForms(type) {
     }
     if (id === "queryFilter") input.placeholder = isSql ? "例如：id > 100 AND status = 'active'" : "{}";
     if (id === "querySort") input.placeholder = isSql ? "例如：created_at DESC" : "";
+
+    if (isSql && fieldsToClear.includes(id) && MONGO_PLACEHOLDER_VALUES.has(input.value.trim())) {
+      input.value = "";
+    }
+    if (isSql && id === "insertDoc" && input.value.trim() === MONGO_DEFAULT_DOC.trim()) {
+      input.value = `{
+  "name": "demo",
+  "created_at": {"__sql.date": "2026-01-01T00:00:00Z"}
+}`;
+    }
+    if (isSql && id === "updateDoc" && input.value.trim() === MONGO_DEFAULT_UPDATE.trim()) {
+      input.value = `{
+  "name": "updated",
+  "updated_at": {"__sql.date": "2026-01-01T00:00:00Z"}
+}`;
+    }
+    if (isSql && id === "deleteFilter" && MONGO_PLACEHOLDER_VALUES.has(input.value.trim())) {
+      input.value = "";
+    }
   });
 
   const termInput = $("terminalInput");
