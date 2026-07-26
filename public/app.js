@@ -58,6 +58,17 @@ function findSavedConnection(connectionId) {
   return state.connections.find((item) => item.id === connectionId) || null;
 }
 
+function findLatestConnectionOfType(type) {
+  const matches = state.connections.filter((item) => (item.type || "mongo") === type);
+  if (!matches.length) return null;
+  matches.sort((a, b) => {
+    const at = a.lastUsedAt || a.createdAt || "";
+    const bt = b.lastUsedAt || b.createdAt || "";
+    return bt.localeCompare(at);
+  });
+  return matches[0];
+}
+
 function editingConnection() {
   return findSavedConnection(state.editingConnectionId);
 }
@@ -4206,9 +4217,15 @@ function bindEvents() {
   $("connectionTypeInput").addEventListener("change", (e) => {
     const type = e.target.value || "mongo";
     applyUriPlaceholder(type);
+    // 切换类型：输入框为空、或匹配某类型默认值时，自动带出该类型最近用过的连接串；没有则用内置默认（仅 mongo）；都没有则留空
     const cur = $("uriInput").value.trim();
     const isDefault = Object.values(DEFAULT_URIS).includes(cur);
-    if (isDefault) $("uriInput").value = DEFAULT_URIS[type];
+    if (!isDefault && cur) {
+      renderConnectionList();
+      return;
+    }
+    const latest = findLatestConnectionOfType(type);
+    $("uriInput").value = latest ? latest.uri : DEFAULT_URIS[type];
     renderConnectionList();
   });
   $("sidebarToggleBtn").addEventListener("click", () => {
