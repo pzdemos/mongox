@@ -75,8 +75,8 @@ function editingConnection() {
 
 const DEFAULT_URIS = {
   mongo: "mongodb://127.0.0.1:16016",
-  postgres: "",
-  mysql: "",
+  postgres: "postgresql://mongox_test:testpass123@127.0.0.1:5432/mongox_testdb",
+  mysql: "mysql://mongox_test:testpass123@127.0.0.1:3306/mongox_testdb",
 };
 
 const URI_PLACEHOLDERS = {
