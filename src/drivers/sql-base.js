@@ -42,6 +42,65 @@ export function quoteIdentMysql(name) {
   return `\`${name}\``;
 }
 
+export function assertIdent(name, label = "标识符") {
+  const text = String(name || "").trim();
+  if (!text) {
+    throw new Error(`${label}不能为空`);
+  }
+  if (/[^\x00-\x7F]/.test(text) || /[\u4e00-\u9fff]/.test(text)) {
+    throw new Error(`${label}不能包含中文或非 ASCII 字符: ${text}`);
+  }
+  if (!IDENT_RE.test(text)) {
+    throw new Error(
+      `${label}仅允许字母、数字、下划线，且不能以数字开头（收到: ${text}）`,
+    );
+  }
+  return text;
+}
+
+/** 允许常见 SQL 类型字面量，拒绝注入字符 */
+export function validateSqlType(type) {
+  const text = String(type || "").trim();
+  if (!text || text.length > 80) {
+    throw new Error("列类型无效");
+  }
+  if (!/^[A-Za-z][A-Za-z0-9_()\s,]*$/.test(text)) {
+    throw new Error(`非法列类型: ${type}`);
+  }
+  if (/;|--|\/\*|\*\//.test(text)) {
+    throw new Error("列类型不允许包含注释或分号");
+  }
+  return text;
+}
+
+/**
+ * 归一化索引键：
+ * - { col: 1 | -1 }
+ * - ["col", "col2"] → 全部 ASC
+ */
+export function normalizeIndexKeys(keys) {
+  if (Array.isArray(keys)) {
+    const out = {};
+    for (const item of keys) {
+      const col = assertIdent(item, "索引列名");
+      out[col] = 1;
+    }
+    if (!Object.keys(out).length) throw new Error("索引列不能为空");
+    return out;
+  }
+  if (!keys || typeof keys !== "object") {
+    throw new Error("索引键必须是对象或列名数组");
+  }
+  const out = {};
+  for (const [col, dir] of Object.entries(keys)) {
+    const name = assertIdent(col, "索引列名");
+    const n = Number(dir);
+    out[name] = n === -1 ? -1 : 1;
+  }
+  if (!Object.keys(out).length) throw new Error("索引列不能为空");
+  return out;
+}
+
 // 把 Date / BigInt / Buffer 等转成可 JSON 序列化的值
 export function normalizeRow(value) {
   if (value === null || value === undefined) return null;
@@ -67,11 +126,24 @@ export function normalizeRow(value) {
   return value;
 }
 
+/** 解开 normalizeRow 产出的扁平标记：{"__sql.date": "..."} 等（不是嵌套 __sql.date） */
 export function reviveSqlValue(value) {
   if (value && typeof value === "object" && !Array.isArray(value)) {
-    if (value.__sql.date) return value.__sql.date;
-    if (value.__sql.bigint) return value.__sql.bigint;
-    if (value.__sql.bytes) return value.__sql.bytes;
+    if (typeof value["__sql.date"] === "string") return value["__sql.date"];
+    if (typeof value["__sql.bigint"] === "string") return value["__sql.bigint"];
+    if (typeof value["__sql.bytes"] === "string") return value["__sql.bytes"];
+  }
+  return value;
+}
+
+/** 写入 SQL 参数前恢复为驱动原生类型（Date / BigInt / Buffer） */
+export function reviveForSql(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    if (typeof value["__sql.date"] === "string") return new Date(value["__sql.date"]);
+    if (typeof value["__sql.bigint"] === "string") return BigInt(value["__sql.bigint"]);
+    if (typeof value["__sql.bytes"] === "string") {
+      return Buffer.from(value["__sql.bytes"], "hex");
+    }
   }
   return value;
 }

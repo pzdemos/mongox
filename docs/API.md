@@ -56,6 +56,8 @@
 | 13  | GET    | `/mongo/api/databases`              | 列出全部数据库                 | 是   |
 | 14  | POST   | `/mongo/api/database`               | 选择数据库                     | 是   |
 | 15  | GET    | `/mongo/api/collections`            | 列出当前库的集合 / 表          | 是   |
+| 15a | POST   | `/mongo/api/collections`            | 创建集合 / 表                   | 是   |
+| 15b | DELETE | `/mongo/api/collections`            | 删除集合 / 表                   | 是   |
 | 16  | GET    | `/mongo/api/search-collections`     | 跨库搜索集合 / 表              | 是   |
 | 17  | POST   | `/mongo/api/collection`             | 选择集合 / 表                  | 是   |
 | 18  | POST   | `/mongo/api/command`                | 终端命令（Shell 或 SQL）       | 是   |
@@ -65,6 +67,8 @@
 | 22  | POST   | `/mongo/api/delete`                 | 删除                           | 是   |
 | 23  | GET    | `/mongo/api/stats`                  | 集合统计（仅 Mongo）           | 是   |
 | 24  | GET    | `/mongo/api/indexes`                | 列出索引                       | 是   |
+| 24a | POST   | `/mongo/api/indexes`                | 创建索引                       | 是   |
+| 24b | DELETE | `/mongo/api/indexes`                | 删除索引                       | 是   |
 | 25  | GET    | `/mongo/api/collection-stats`       | 集合 / 表详细统计              | 是   |
 | 26  | POST   | `/mongo/api/export`                 | 导出（仅 Mongo）               | 是   |
 

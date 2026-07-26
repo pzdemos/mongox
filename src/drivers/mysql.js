@@ -6,6 +6,10 @@ import {
   parseLimit,
   quoteIdentMysql,
   normalizeRow,
+  reviveForSql,
+  assertIdent,
+  validateSqlType,
+  normalizeIndexKeys,
 } from "./sql-base.js";
 
 const SYSTEM_DBS = new Set([
@@ -163,6 +167,70 @@ export class MysqlDriver {
     return [...groups.values()];
   }
 
+  async createTable(dbName, table, { columns = [] } = {}) {
+    const database = assertIdent(dbName, "库名");
+    const tableName = assertIdent(table, "表名");
+    if (!Array.isArray(columns) || !columns.length) {
+      throw new Error("至少需要一列");
+    }
+    let primaryCount = 0;
+    const parts = columns.map((col) => {
+      const name = quoteIdentMysql(assertIdent(col?.name, "列名"));
+      const type = validateSqlType(col?.type);
+      let part = `${name} ${type}`;
+      if (col?.primary) {
+        primaryCount += 1;
+        part += " PRIMARY KEY";
+      } else if (col?.notNull) {
+        part += " NOT NULL";
+      }
+      return part;
+    });
+    if (primaryCount > 1) throw new Error("只能有一列 PRIMARY KEY");
+    const sql = `CREATE TABLE ${quoteIdentMysql(database)}.${quoteIdentMysql(tableName)} (${parts.join(
+      ", ",
+    )})`;
+    await this.pool.query(sql);
+    return { name: tableName, sql };
+  }
+
+  async dropTable(dbName, table) {
+    const database = assertIdent(dbName, "库名");
+    const tableName = assertIdent(table, "表名");
+    const sql = `DROP TABLE ${quoteIdentMysql(database)}.${quoteIdentMysql(tableName)}`;
+    await this.pool.query(sql);
+    return { name: tableName, sql };
+  }
+
+  async createIndex(dbName, table, { name, keys, unique = false } = {}) {
+    const database = assertIdent(dbName, "库名");
+    const tableName = assertIdent(table, "表名");
+    const keyMap = normalizeIndexKeys(keys);
+    const entries = Object.entries(keyMap);
+    const cols = entries
+      .map(([col, dir]) => `${quoteIdentMysql(col)} ${dir === -1 ? "DESC" : "ASC"}`)
+      .join(", ");
+    const idxName = name
+      ? assertIdent(name, "索引名")
+      : assertIdent(`${tableName}_${entries.map(([c]) => c).join("_")}_idx`, "索引名");
+    const sql = `CREATE ${unique ? "UNIQUE " : ""}INDEX ${quoteIdentMysql(idxName)} ON ${quoteIdentMysql(
+      database,
+    )}.${quoteIdentMysql(tableName)} (${cols})`;
+    await this.pool.query(sql);
+    return { name: idxName, sql };
+  }
+
+  async dropIndex(dbName, table, name) {
+    const database = assertIdent(dbName, "库名");
+    const tableName = assertIdent(table, "表名");
+    const idxName = assertIdent(name, "索引名");
+    const sql = `DROP INDEX ${quoteIdentMysql(idxName)} ON ${quoteIdentMysql(database)}.${quoteIdentMysql(
+      tableName,
+    )}`;
+    await this.pool.query(sql);
+    return { name: idxName, sql };
+  }
+
   async runCommand(text) {
     const trimmed = String(text || "").trim();
     if (!trimmed) throw new Error("SQL 不能为空");
@@ -224,13 +292,4 @@ export class MysqlDriver {
 
     return { matches, truncated };
   }
-}
-
-function reviveForSql(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    if (value.__sql.date) return new Date(value.__sql.date);
-    if (value.__sql.bigint) return BigInt(value.__sql.bigint);
-    if (value.__sql.bytes) return Buffer.from(value.__sql.bytes, "hex");
-  }
-  return value;
 }

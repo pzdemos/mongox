@@ -6,7 +6,11 @@ import {
   parseLimit,
   quoteIdentPg,
   normalizeRow,
+  reviveForSql,
   assertSingleStatement,
+  assertIdent,
+  validateSqlType,
+  normalizeIndexKeys,
 } from "./sql-base.js";
 
 const SYSTEM_DBS = new Set(["template0", "template1", "postgres"]);
@@ -182,6 +186,61 @@ export class PostgresDriver {
     });
   }
 
+  async createTable(dbName, table, { columns = [] } = {}) {
+    const tableName = assertIdent(table, "表名");
+    if (!Array.isArray(columns) || !columns.length) {
+      throw new Error("至少需要一列");
+    }
+    let primaryCount = 0;
+    const parts = columns.map((col) => {
+      const name = quoteIdentPg(assertIdent(col?.name, "列名"));
+      const type = validateSqlType(col?.type);
+      let part = `${name} ${type}`;
+      if (col?.primary) {
+        primaryCount += 1;
+        part += " PRIMARY KEY";
+      } else if (col?.notNull) {
+        part += " NOT NULL";
+      }
+      return part;
+    });
+    if (primaryCount > 1) throw new Error("只能有一列 PRIMARY KEY");
+    const sql = `CREATE TABLE ${quoteIdentPg("public")}.${quoteIdentPg(tableName)} (${parts.join(", ")})`;
+    await this.pool.query(sql);
+    return { name: tableName, sql };
+  }
+
+  async dropTable(dbName, table) {
+    const tableName = assertIdent(table, "表名");
+    const sql = `DROP TABLE ${quoteIdentPg("public")}.${quoteIdentPg(tableName)}`;
+    await this.pool.query(sql);
+    return { name: tableName, sql };
+  }
+
+  async createIndex(dbName, table, { name, keys, unique = false } = {}) {
+    const tableName = assertIdent(table, "表名");
+    const keyMap = normalizeIndexKeys(keys);
+    const entries = Object.entries(keyMap);
+    const cols = entries
+      .map(([col, dir]) => `${quoteIdentPg(col)} ${dir === -1 ? "DESC" : "ASC"}`)
+      .join(", ");
+    const idxName = name
+      ? assertIdent(name, "索引名")
+      : assertIdent(`${tableName}_${entries.map(([c]) => c).join("_")}_idx`, "索引名");
+    const sql = `CREATE ${unique ? "UNIQUE " : ""}INDEX ${quoteIdentPg(idxName)} ON ${quoteIdentPg(
+      "public",
+    )}.${quoteIdentPg(tableName)} (${cols})`;
+    await this.pool.query(sql);
+    return { name: idxName, sql };
+  }
+
+  async dropIndex(dbName, table, name) {
+    const idxName = assertIdent(name, "索引名");
+    const sql = `DROP INDEX ${quoteIdentPg("public")}.${quoteIdentPg(idxName)}`;
+    await this.pool.query(sql);
+    return { name: idxName, sql };
+  }
+
   async runCommand(text) {
     const trimmed = assertSingleStatement(String(text || ""));
     if (!trimmed) throw new Error("SQL 不能为空");
@@ -251,13 +310,4 @@ export class PostgresDriver {
 
     return { matches, truncated };
   }
-}
-
-function reviveForSql(value) {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    if (value.__sql.date) return new Date(value.__sql.date);
-    if (value.__sql.bigint) return BigInt(value.__sql.bigint);
-    if (value.__sql.bytes) return Buffer.from(value.__sql.bytes, "hex");
-  }
-  return value;
 }

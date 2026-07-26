@@ -11,6 +11,7 @@ import { EJSON } from "bson";
 import { MongoClient } from "mongodb";
 import { PostgresDriver } from "./drivers/postgres.js";
 import { MysqlDriver } from "./drivers/mysql.js";
+import { assertIdent, normalizeIndexKeys } from "./drivers/sql-base.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1927,6 +1928,159 @@ app.get(
         unique: Boolean(item.unique),
         sparse: Boolean(item.sparse),
       })),
+    });
+  }),
+);
+
+app.post(
+  apiPath("/indexes"),
+  asyncHandler(async (req, res) => {
+    const { runtime, connection } = await requireReadyContext(req, { requireDb: true });
+    const dbName = String(req.body?.dbName || connection.dbName || "").trim();
+    const collectionName = String(req.body?.collectionName || connection.collectionName || "").trim();
+    const name = req.body?.name ? String(req.body.name).trim() : "";
+    const unique = Boolean(req.body?.unique);
+    const sparse = Boolean(req.body?.sparse);
+    let keys = req.body?.keys;
+    if (typeof keys === "string") {
+      try {
+        keys = JSON.parse(keys);
+      } catch {
+        return res.status(400).json({ ok: false, error: "keys 必须是合法 JSON" });
+      }
+    }
+    if (!dbName) return res.status(400).json({ ok: false, error: "请先选择数据库" });
+    if (!collectionName) return res.status(400).json({ ok: false, error: "表名不能为空" });
+
+    let safeIndexName = "";
+    try {
+      if (name) safeIndexName = assertIdent(name, "索引名");
+      normalizeIndexKeys(keys);
+    } catch (error) {
+      return res.status(400).json({ ok: false, error: error.message });
+    }
+
+    if (runtime.driver) {
+      const result = await runtime.driver.createIndex(dbName, collectionName, {
+        name: safeIndexName || undefined,
+        keys,
+        unique,
+      });
+      return res.json({ ok: true, name: result.name, sql: result.sql || null });
+    }
+
+    const keyMap = normalizeIndexKeys(keys);
+    const options = {};
+    if (safeIndexName) options.name = safeIndexName;
+    if (unique) options.unique = true;
+    if (sparse) options.sparse = true;
+    const created = await runtime.client
+      .db(dbName)
+      .collection(collectionName)
+      .createIndex(keyMap, options);
+    res.json({ ok: true, name: created, sql: null });
+  }),
+);
+
+app.delete(
+  apiPath("/indexes"),
+  asyncHandler(async (req, res) => {
+    const { runtime, connection } = await requireReadyContext(req, { requireDb: true });
+    const dbName = String(req.body?.dbName || connection.dbName || "").trim();
+    const collectionName = String(req.body?.collectionName || connection.collectionName || "").trim();
+    const name = String(req.body?.name || "").trim();
+    if (!dbName) return res.status(400).json({ ok: false, error: "请先选择数据库" });
+    if (!collectionName) return res.status(400).json({ ok: false, error: "表名不能为空" });
+    if (!name) return res.status(400).json({ ok: false, error: "索引名不能为空" });
+    if (name === "_id_") {
+      return res.status(400).json({ ok: false, error: "不能删除 MongoDB 默认 _id_ 索引" });
+    }
+
+    if (runtime.driver) {
+      const result = await runtime.driver.dropIndex(dbName, collectionName, name);
+      return res.json({ ok: true, name: result.name, sql: result.sql || null });
+    }
+
+    await runtime.client.db(dbName).collection(collectionName).dropIndex(name);
+    res.json({ ok: true, name, sql: null });
+  }),
+);
+
+app.post(
+  apiPath("/collections"),
+  asyncHandler(async (req, res) => {
+    const { runtime, connection } = await requireReadyContext(req, { requireDb: true });
+    const dbName = String(req.body?.dbName || connection.dbName || "").trim();
+    const name = String(req.body?.name || req.body?.collectionName || "").trim();
+    let columns = req.body?.columns;
+    if (typeof columns === "string") {
+      try {
+        columns = JSON.parse(columns);
+      } catch {
+        return res.status(400).json({ ok: false, error: "columns 必须是合法 JSON" });
+      }
+    }
+    if (!dbName) return res.status(400).json({ ok: false, error: "请先选择数据库" });
+    if (!name) return res.status(400).json({ ok: false, error: "名称不能为空" });
+
+    let safeName;
+    try {
+      safeName = assertIdent(name, runtime.driver ? "表名" : "集合名");
+    } catch (error) {
+      return res.status(400).json({ ok: false, error: error.message });
+    }
+
+    if (runtime.driver) {
+      if (!Array.isArray(columns) || !columns.length) {
+        return res.status(400).json({
+          ok: false,
+          error: "SQL 建表需要 columns 数组，例如 [{name,type,primary?}]",
+        });
+      }
+      const result = await runtime.driver.createTable(dbName, safeName, { columns });
+      return res.json({ ok: true, name: result.name, sql: result.sql || null });
+    }
+
+    await runtime.client.db(dbName).createCollection(safeName);
+    res.json({ ok: true, name: safeName, sql: null });
+  }),
+);
+
+app.delete(
+  apiPath("/collections"),
+  asyncHandler(async (req, res) => {
+    const { bucket, runtime, connection } = await requireReadyContext(req, { requireDb: true });
+    const dbName = String(req.body?.dbName || connection.dbName || "").trim();
+    const name = String(req.body?.name || req.body?.collectionName || "").trim();
+    if (!dbName) return res.status(400).json({ ok: false, error: "请先选择数据库" });
+    if (!name) return res.status(400).json({ ok: false, error: "名称不能为空" });
+
+    if (runtime.driver) {
+      const result = await runtime.driver.dropTable(dbName, name);
+      if (connection.collectionName === name) {
+        connection.collectionName = "";
+        connection.updatedAt = nowIso();
+        await persistStore();
+      }
+      return res.json({
+        ok: true,
+        name: result.name,
+        sql: result.sql || null,
+        status: buildStatus(req.clientId, bucket),
+      });
+    }
+
+    await runtime.client.db(dbName).collection(name).drop();
+    if (connection.collectionName === name) {
+      connection.collectionName = "";
+      connection.updatedAt = nowIso();
+      await persistStore();
+    }
+    res.json({
+      ok: true,
+      name,
+      sql: null,
+      status: buildStatus(req.clientId, bucket),
     });
   }),
 );
