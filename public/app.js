@@ -64,14 +64,14 @@ function editingConnection() {
 
 const DEFAULT_URIS = {
   mongo: "mongodb://127.0.0.1:16016",
-  postgres: "postgresql://user:password@127.0.0.1:5432/postgres",
-  mysql: "mysql://root:password@127.0.0.1:3306/mysql",
+  postgres: "",
+  mysql: "",
 };
 
 const URI_PLACEHOLDERS = {
   mongo: "mongodb://127.0.0.1:16016",
-  postgres: "postgresql://user:password@host:5432/db",
-  mysql: "mysql://root:password@host:3306/db",
+  postgres: "postgresql://用户名:密码@主机:5432/库名",
+  mysql: "mysql://用户名:密码@主机:3306/库名",
 };
 
 function readConnectionDraft() {
