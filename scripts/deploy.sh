@@ -1,11 +1,14 @@
 #!/bin/bash
 
 #============================================
-# Auto Deploy Script for mongox (MongoDB Admin Web)
+# Auto Deploy Script for mongox + SqlX
 # Usage: ./scripts/deploy.sh [commit_message]
+# Env:
+#   SQLX_DIR   frontend path (default: ../SqlX)
+#   SKIP_LINT  set to 1 to skip frontend lint
 #============================================
 
-set -e  # Exit on error
+set -e
 
 #============================================
 # Configuration
@@ -14,37 +17,19 @@ REMOTE_HOST="root@121.43.33.235"
 REMOTE_PATH="/var/server/mongox"
 PM2_APP_NAME="mongox"
 BRANCH="dev"
-# PM2_CMD 由 resolve_pm2_cmd() 在运行时解析，避免硬编码 nvm 版本路径
+# PM2_CMD 由 resolve_pm2_cmd() 在运行时解析
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-#============================================
-# Functions
-#============================================
+print_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+print_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
+print_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
+print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
-# Print colored message
-print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# Print section header
 print_section() {
     echo ""
     echo -e "${BLUE}============================================${NC}"
@@ -52,7 +37,6 @@ print_section() {
     echo -e "${BLUE}============================================${NC}"
 }
 
-# Check command result
 check_result() {
     if [ $? -ne 0 ]; then
         print_error "$1"
@@ -60,7 +44,6 @@ check_result() {
     fi
 }
 
-# Check if we're in a git repository
 check_git_repo() {
     if [ ! -d ".git" ]; then
         print_error "Not a git repository!"
@@ -68,7 +51,6 @@ check_git_repo() {
     fi
 }
 
-# Resolve pm2 path on remote (avoid hardcoding nvm version path)
 resolve_pm2_cmd() {
     print_section "Resolving PM2 on remote"
 
@@ -77,7 +59,6 @@ resolve_pm2_cmd() {
         print_error "SSH failed while resolving pm2"
         exit 1
     fi
-    # ssh 输出可能混入 profile 的提示文本，取最后一行非空内容并去空白
     PM2_CMD=$(printf '%s' "$PM2_CMD" | awk 'NF{line=$0} END{print line}')
     if [ -z "$PM2_CMD" ]; then
         print_error "pm2 not found on remote — check nvm installation or login shell PATH"
@@ -86,7 +67,13 @@ resolve_pm2_cmd() {
     print_success "PM2: $PM2_CMD"
 }
 
-# Check for uncommitted changes
+build_frontend() {
+    print_section "Building frontend (SqlX → public/)"
+    bash "$(dirname "$0")/build-frontend.sh"
+    check_result "Frontend build failed"
+    print_success "Frontend ready in public/ (gitignored build artifacts)"
+}
+
 check_changes() {
     print_section "Checking for changes"
 
@@ -106,29 +93,20 @@ check_changes() {
     fi
 }
 
-# Run pre-commit checks
 run_pre_commit_checks() {
     print_section "Running pre-commit checks"
 
-    # Check if npm is available
     if command -v npm &> /dev/null; then
         print_info "Running npm run check..."
         npm run check || print_warning "Check found issues (continuing anyway)"
     fi
-
-    # Add more checks here as needed
-    # - Run tests
-    # - Check for console.log
-    # - Validate package.json
 }
 
-# Stage and commit changes
 commit_changes() {
     print_section "Committing changes"
 
     local commit_msg="$1"
 
-    # If no commit message provided, generate one
     if [ -z "$commit_msg" ]; then
         read -p "Enter commit message: " commit_msg
         if [ -z "$commit_msg" ]; then
@@ -137,16 +115,13 @@ commit_changes() {
         fi
     fi
 
-    # Stage all changes
     print_info "Staging changes..."
     git add -A
     check_result "Failed to stage changes"
 
-    # Show what will be committed
     print_info "Changes to be committed:"
     git diff --cached --stat
 
-    # Confirm commit
     read -p "Commit these changes? (y/N) " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -154,14 +129,12 @@ commit_changes() {
         exit 1
     fi
 
-    # Create commit
     print_info "Creating commit..."
     git commit -m "$commit_msg"
     check_result "Failed to create commit"
     print_success "Commit created"
 }
 
-# Push to remote
 push_to_remote() {
     print_section "Pushing to remote"
 
@@ -171,18 +144,42 @@ push_to_remote() {
     print_success "Pushed to origin/$BRANCH"
 }
 
-# Deploy to remote server
-deploy_to_remote() {
-    print_section "Deploying to remote server"
+# 通过 scp/rsync 上传 public（含构建产物与 v1）
+sync_public_to_remote() {
+    print_section "Uploading public/ via rsync/scp"
 
-    # Test SSH connection
+    if [ ! -f "public/index.html" ]; then
+        print_error "public/index.html missing — run frontend build first"
+        exit 1
+    fi
+
+    print_info "Ensuring remote public dir exists..."
+    ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_PATH/public'"
+    check_result "Failed to create remote public dir"
+
+    if command -v rsync >/dev/null 2>&1; then
+        print_info "rsync public/ → $REMOTE_HOST:$REMOTE_PATH/public/"
+        # 完整同步 public（含 v1 + 构建产物）；--delete 使远端与本地一致
+        rsync -az --delete -e ssh "public/" "$REMOTE_HOST:$REMOTE_PATH/public/"
+        check_result "rsync public failed"
+    else
+        print_warning "rsync 不可用，回退 scp -r"
+        ssh "$REMOTE_HOST" "rm -rf '$REMOTE_PATH/public' && mkdir -p '$REMOTE_PATH/public'"
+        scp -r public/. "$REMOTE_HOST:$REMOTE_PATH/public/"
+        check_result "scp public failed"
+    fi
+    print_success "public/ uploaded"
+}
+
+deploy_to_remote() {
+    print_section "Deploying backend code on remote"
+
     print_info "Testing SSH connection..."
     ssh -o ConnectTimeout=5 "$REMOTE_HOST" "echo 'Connection successful'"
     check_result "SSH connection failed"
     print_success "SSH connection OK"
 
-    # Run remote workflow: stash -> 3-way pull -> dep check -> reload -> health check
-    print_info "Syncing code and reloading remote..."
+    print_info "Syncing git code and reloading remote..."
     ssh "$REMOTE_HOST" bash -s "$REMOTE_PATH" "$BRANCH" "$PM2_APP_NAME" "$PM2_CMD" <<'REMOTE_SCRIPT'
 set -e
 REMOTE_PATH="$1"; BRANCH="$2"; PM2_APP_NAME="$3"; PM2_CMD="$4"
@@ -190,13 +187,11 @@ HEALTH_URL="http://127.0.0.1:5000/mongo/api/health"
 
 cd "$REMOTE_PATH"
 
-# Stash if dirty (e.g. operator-edited runtime files)
 if [ -n "$(git status --porcelain)" ]; then
     echo "== Remote dirty, stashing =="
-    git stash push -m "deploy-auto-stash-$(date +%Y%m%d-%H%M%S)"
+    git stash push -m "deploy-auto-stash-$(date +%Y%m%d-%H%M%S)" || true
 fi
 
-# 3-way pull decision
 git fetch origin "$BRANCH"
 LOCAL=$(git rev-parse @)
 REMOTE=$(git rev-parse "origin/$BRANCH")
@@ -217,16 +212,15 @@ else
     git diff --name-only "$BEFORE" HEAD | grep -qE '^(package\.json|package-lock\.json)$' && NEED_INSTALL=true
 fi
 
+# git pull 可能用仓库内的 public/v1 覆盖；构建产物稍后由 rsync 补回
 if [ "$NEED_INSTALL" = true ]; then
     echo "== package.json changed, running npm install =="
     npm install --omit=dev
 fi
 
-# Reload PM2 (zero-downtime cluster reload)
 echo "== Reloading PM2 app: $PM2_APP_NAME =="
 "$PM2_CMD" reload "$PM2_APP_NAME"
 
-# Health check (cluster reload is rolling; give new workers a moment)
 echo "== Waiting for service (2s) =="
 sleep 2
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$HEALTH_URL" || echo "000")
@@ -239,10 +233,9 @@ else
 fi
 REMOTE_SCRIPT
     check_result "Remote deploy failed (see output above)"
-    print_success "Deployment verified (HTTP 200)"
+    print_success "Backend deploy verified (HTTP 200)"
 }
 
-# Diagnose failure (does NOT auto-rollback — too risky on shared branch)
 diagnose_failure() {
     print_section "Deployment Failed - Diagnostic Info"
 
@@ -258,55 +251,74 @@ diagnose_failure() {
     print_warning "  ssh $REMOTE_HOST \"cd $REMOTE_PATH && git reset --hard HEAD~1 && $PM2_CMD reload $PM2_APP_NAME\""
 }
 
-# Main execution
 main() {
-    print_section "MongoDB Admin Web (mongox) Auto Deploy"
+    print_section "mongox + SqlX Auto Deploy"
 
-    # Save current directory
-    local current_dir=$(pwd)
+    local current_dir
+    current_dir=$(pwd)
     cd "$(dirname "$0")/.." || exit 1
 
-    # Trap errors for diagnostics
     trap 'diagnose_failure; cd "$current_dir"' ERR
 
-    # Execute workflow
     check_git_repo
     resolve_pm2_cmd
 
+    # 1) 前端检查 + 打包到 public/
+    build_frontend
+
+    # 2) 后端变更提交（若有）
     if check_changes; then
         run_pre_commit_checks
         commit_changes "$1"
     fi
 
+    # 3) 推送后端代码
     push_to_remote
+
+    # 4) 远程 pull + pm2 reload
     deploy_to_remote
 
-    # Success message
+    # 5) 再上传 public（避免 git reset/pull 清掉被 ignore 的构建产物）
+    sync_public_to_remote
+
+    # 6) 上传静态资源后再 reload 一次，确保进程读到最新文件（express.static 无缓存问题，reload 更稳妥）
+    print_section "Reload after public sync"
+    ssh "$REMOTE_HOST" bash -lc "'$PM2_CMD' reload '$PM2_APP_NAME'"
+    sleep 1
+    HTTP_CODE=$(ssh "$REMOTE_HOST" "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/mongo/api/health" || echo "000")
+    if [ "$HTTP_CODE" = "200" ]; then
+        print_success "Post-upload health OK"
+    else
+        print_error "Post-upload health failed (HTTP $HTTP_CODE)"
+        exit 1
+    fi
+
     print_section "Deployment Complete"
     print_success "All operations completed successfully!"
     echo ""
     print_info "App URL: https://mongo.haoaiganfan.top"
+    print_info "Legacy UI: https://mongo.haoaiganfan.top/v1/"
     print_info "PM2 Status: ssh $REMOTE_HOST \"$PM2_CMD status\""
     print_info "View Logs: ssh $REMOTE_HOST \"$PM2_CMD logs $PM2_APP_NAME --lines 50\""
 
     cd "$current_dir"
 }
 
-# Parse command line arguments
 case "${1:-}" in
     -h|--help)
         echo "Usage: $0 [commit_message]"
         echo ""
-        echo "Automates the deployment process:"
-        echo "  1. Checks for changes"
-        echo "  2. Runs pre-commit checks"
-        echo "  3. Commits changes"
-        echo "  4. Pushes to remote"
-        echo "  5. Deploys to production"
+        echo "Automates deployment:"
+        echo "  1. Check & build sibling SqlX → public/"
+        echo "  2. Commit backend changes (interactive)"
+        echo "  3. Push origin/$BRANCH"
+        echo "  4. Remote git pull + pm2 reload"
+        echo "  5. rsync/scp public/ (build artifacts gitignored)"
         echo ""
         echo "Examples:"
         echo "  $0 \"fix: update query parser\""
-        echo "  $0"
+        echo "  SQLX_DIR=/path/to/SqlX $0"
+        echo "  SKIP_LINT=1 $0"
         exit 0
         ;;
     *)

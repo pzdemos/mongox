@@ -1,33 +1,31 @@
 #!/bin/bash
 
 #============================================
-# Quick Deploy Script for mongox (Non-interactive)
+# Quick Deploy Script for mongox + SqlX (Non-interactive)
 # Usage: ./scripts/deploy-quick.sh [commit_message]
+# Env:
+#   SQLX_DIR   frontend path (default: ../SqlX)
+#   SKIP_LINT  set to 1 to skip frontend lint
 #============================================
 
 set -e
 
-# Switch to project root (script lives in scripts/)
 cd "$(dirname "$0")/.."
 
-# Configuration
 REMOTE_HOST="root@121.43.33.235"
 REMOTE_PATH="/var/server/mongox"
 PM2_APP_NAME="mongox"
 BRANCH="dev"
-# PM2_CMD 在下方动态解析，避免硬编码 nvm 版本路径
 
-# Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}============================================${NC}"
-echo -e "${BLUE}Quick Deploy - MongoDB Admin Web${NC}"
+echo -e "${BLUE}Quick Deploy - mongox + SqlX${NC}"
 echo -e "${BLUE}============================================${NC}"
 
-# Resolve pm2 path on remote (avoid hardcoding nvm version path)
 echo -e "${BLUE}→${NC} Resolving pm2 path on remote..."
 PM2_CMD=$(ssh -o ConnectTimeout=5 "$REMOTE_HOST" 'bash -lc "command -v pm2" 2>/dev/null' | awk 'NF{line=$0} END{print line}')
 if [ -z "$PM2_CMD" ]; then
@@ -36,7 +34,10 @@ if [ -z "$PM2_CMD" ]; then
 fi
 echo -e "${GREEN}✓${NC} PM2: $PM2_CMD"
 
-# Check if there are changes
+echo -e "${BLUE}→${NC} Building frontend..."
+bash scripts/build-frontend.sh
+echo -e "${GREEN}✓${NC} Frontend built into public/"
+
 if [ -z "$(git status --porcelain)" ]; then
     echo -e "${GREEN}✓${NC} No changes to commit"
     CHANGES_EXIST=false
@@ -45,12 +46,10 @@ else
     CHANGES_EXIST=true
 fi
 
-# Commit changes if any
 if [ "$CHANGES_EXIST" = true ]; then
     echo -e "${BLUE}→${NC} Staging and committing changes..."
     git add -A || { echo -e "${RED}✗${NC} Failed to stage"; exit 1; }
 
-    # Generate commit message if none provided
     if [ -n "$1" ]; then
         COMMIT_MSG="$*"
     else
@@ -61,13 +60,11 @@ if [ "$CHANGES_EXIST" = true ]; then
     echo -e "${GREEN}✓${NC} Changes committed"
 fi
 
-# Push to remote
 echo -e "${BLUE}→${NC} Pushing to origin/$BRANCH..."
 git push origin "$BRANCH" || { echo -e "${RED}✗${NC} Failed to push"; exit 1; }
 echo -e "${GREEN}✓${NC} Pushed"
 
-# Deploy to remote: stash -> 3-way pull -> dep check -> reload -> health check
-echo -e "${BLUE}→${NC} Deploying to remote..."
+echo -e "${BLUE}→${NC} Deploying backend on remote..."
 if ssh "$REMOTE_HOST" bash -s "$REMOTE_PATH" "$BRANCH" "$PM2_APP_NAME" "$PM2_CMD" <<'REMOTE_SCRIPT'
 set -e
 REMOTE_PATH="$1"; BRANCH="$2"; PM2_APP_NAME="$3"; PM2_CMD="$4"
@@ -77,7 +74,7 @@ cd "$REMOTE_PATH"
 
 if [ -n "$(git status --porcelain)" ]; then
     echo "== Remote dirty, stashing =="
-    git stash push -m "deploy-auto-stash-$(date +%Y%m%d-%H%M%S)"
+    git stash push -m "deploy-auto-stash-$(date +%Y%m%d-%H%M%S)" || true
 fi
 
 git fetch origin "$BRANCH"
@@ -120,10 +117,31 @@ else
 fi
 REMOTE_SCRIPT
 then
-    echo -e "${GREEN}✓${NC} Deployed"
+    echo -e "${GREEN}✓${NC} Backend deployed"
 else
-    echo -e "${RED}✗${NC} Deployment failed"
-    echo -e "${RED}✗${NC} Recent logs: ssh $REMOTE_HOST \"$PM2_CMD logs $PM2_APP_NAME --lines 20 --nostream\""
+    echo -e "${RED}✗${NC} Backend deployment failed"
+    exit 1
+fi
+
+echo -e "${BLUE}→${NC} Uploading public/ (rsync/scp)..."
+if [ ! -f "public/index.html" ]; then
+    echo -e "${RED}✗${NC} public/index.html missing"
+    exit 1
+fi
+ssh "$REMOTE_HOST" "mkdir -p '$REMOTE_PATH/public'"
+if command -v rsync >/dev/null 2>&1; then
+    rsync -az --delete -e ssh "public/" "$REMOTE_HOST:$REMOTE_PATH/public/"
+else
+    ssh "$REMOTE_HOST" "rm -rf '$REMOTE_PATH/public' && mkdir -p '$REMOTE_PATH/public'"
+    scp -r public/. "$REMOTE_HOST:$REMOTE_PATH/public/"
+fi
+echo -e "${GREEN}✓${NC} public/ uploaded"
+
+echo -e "${BLUE}→${NC} Reload after public sync..."
+ssh "$REMOTE_HOST" bash -lc "'$PM2_CMD' reload '$PM2_APP_NAME'"
+HTTP_CODE=$(ssh "$REMOTE_HOST" "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/mongo/api/health" || echo "000")
+if [ "$HTTP_CODE" != "200" ]; then
+    echo -e "${RED}✗${NC} Post-upload health failed (HTTP $HTTP_CODE)"
     exit 1
 fi
 

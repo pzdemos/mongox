@@ -22,7 +22,8 @@ const COOKIE_MAX_AGE = 1000 * 60 * 60 * 24 * 365;
 const AUTH_COOKIE_NAME = "mongox_auth";
 const AUTH_MAX_AGE = 1000 * 60 * 60 * 24 * 7;
 const AUTH_PASSWORD = process.env.MONGOX_PASSWORD || "";
-const PUBLIC_PATHS = new Set(["/login", "/login.html"]);
+const PUBLIC_DIR = path.join(__dirname, "..", "public");
+const PUBLIC_PATHS = new Set(["/login", "/login.html", "/v1/login.html"]);
 const PUBLIC_API_PREFIXES = [`${API_PREFIX}/login`, `${API_PREFIX}/health`];
 const DATA_DIR = path.join(__dirname, "..", "data");
 const STORE_FILE = path.join(DATA_DIR, "connections.json");
@@ -36,9 +37,14 @@ const app = express();
 app.use(express.json({ limit: "2mb" }));
 app.use(requireAuth);
 app.get("/login", (_req, res) => {
-  res.sendFile(path.join(__dirname, "..", "public", "login.html"));
+  // SqlX SPA 内置登录页；构建产物缺失时回退到 v1 旧页
+  const spaIndex = path.join(PUBLIC_DIR, "index.html");
+  res.sendFile(spaIndex, (err) => {
+    if (!err) return;
+    res.sendFile(path.join(PUBLIC_DIR, "v1", "login.html"));
+  });
 });
-app.use(express.static(path.join(__dirname, "..", "public")));
+app.use(express.static(PUBLIC_DIR));
 
 const asyncHandler =
   (fn) =>
@@ -136,6 +142,8 @@ function verifyAuth(cookieValue) {
 
 function isPublicPath(reqPath) {
   if (PUBLIC_PATHS.has(reqPath)) return true;
+  // SPA 登录页需在未鉴权时加载 JS/CSS
+  if (reqPath.startsWith("/assets/")) return true;
   return PUBLIC_API_PREFIXES.some((p) => reqPath === p || reqPath.startsWith(`${p}/`));
 }
 

@@ -8,3 +8,8 @@ coverage/
 *.log
 package-lock.json
 data/
+
+# SqlX 构建产物（由 deploy 脚本打包后 scp 上传，不进 git）
+/public/**
+!/public/v1/
+!/public/v1/**
