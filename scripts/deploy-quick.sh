@@ -138,7 +138,10 @@ fi
 echo -e "${GREEN}✓${NC} public/ uploaded"
 
 echo -e "${BLUE}→${NC} Reload after public sync..."
-ssh "$REMOTE_HOST" bash -lc "'$PM2_CMD' reload '$PM2_APP_NAME'"
+ssh "$REMOTE_HOST" "$PM2_CMD" reload "$PM2_APP_NAME" || {
+    echo -e "${RED}✗${NC} PM2 reload failed"
+    exit 1
+}
 HTTP_CODE=$(ssh "$REMOTE_HOST" "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/mongo/api/health" || echo "000")
 if [ "$HTTP_CODE" != "200" ]; then
     echo -e "${RED}✗${NC} Post-upload health failed (HTTP $HTTP_CODE)"

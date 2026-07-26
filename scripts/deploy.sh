@@ -283,7 +283,8 @@ main() {
 
     # 6) 上传静态资源后再 reload 一次，确保进程读到最新文件（express.static 无缓存问题，reload 更稳妥）
     print_section "Reload after public sync"
-    ssh "$REMOTE_HOST" bash -lc "'$PM2_CMD' reload '$PM2_APP_NAME'"
+    ssh "$REMOTE_HOST" "$PM2_CMD" reload "$PM2_APP_NAME"
+    check_result "PM2 reload after public sync failed"
     sleep 1
     HTTP_CODE=$(ssh "$REMOTE_HOST" "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5000/mongo/api/health" || echo "000")
     if [ "$HTTP_CODE" = "200" ]; then
