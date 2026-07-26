@@ -1846,6 +1846,22 @@ app.get(
       requireDb: true,
       requireCollection: true,
     });
+
+    if (runtime.driver) {
+      const stats = await runtime.driver.stats(connection.dbName, connection.collectionName);
+      return res.json({
+        ok: true,
+        stats: {
+          estimatedCount: stats.estimatedCount ?? null,
+          accurateCount: stats.accurateCount ?? null,
+          indexCount: stats.nIndexes ?? null,
+          storageSize: stats.storageSize ?? null,
+          avgObjSize: stats.avgObjSize ?? null,
+          totalIndexSize: stats.totalIndexSize ?? null,
+        },
+      });
+    }
+
     const collection = getCollection(runtime, connection);
     const [estimatedCount, accurateCount, indexes] = await Promise.all([
       collection.estimatedDocumentCount(),
@@ -1978,24 +1994,33 @@ app.post(
       requireDb: true,
       requireCollection: true,
     });
-    const filter = parseEjsonInput(req.body?.filter, {});
-    const projection = parseEjsonInput(req.body?.projection, undefined);
-    const sort = parseEjsonInput(req.body?.sort, undefined);
     const format = String(req.body?.format || "json");
     const limitRaw = Number(req.body?.limit ?? 100);
     const limit = Number.isInteger(limitRaw)
       ? Math.min(Math.max(limitRaw, 1), 5000)
       : 100;
 
-    const cursor = getCollection(runtime, connection).find(filter);
-    if (projection) {
-      cursor.project(projection);
+    let docs = [];
+    if (runtime.driver) {
+      const result = await runtime.driver.query(connection.dbName, connection.collectionName, {
+        where: String(req.body?.where || req.body?.filter || "").trim(),
+        orderBy: String(req.body?.orderBy || req.body?.sort || "").trim(),
+        limit,
+      });
+      docs = result.docs || [];
+    } else {
+      const filter = parseEjsonInput(req.body?.filter, {});
+      const projection = parseEjsonInput(req.body?.projection, undefined);
+      const sort = parseEjsonInput(req.body?.sort, undefined);
+      const cursor = getCollection(runtime, connection).find(filter);
+      if (projection) {
+        cursor.project(projection);
+      }
+      if (sort) {
+        cursor.sort(sort);
+      }
+      docs = await cursor.limit(limit).toArray();
     }
-    if (sort) {
-      cursor.sort(sort);
-    }
-
-    const docs = await cursor.limit(limit).toArray();
 
     let filename = `${connection.dbName}_${connection.collectionName}_${Date.now()}.${format}`;
     let mimeType = "text/plain; charset=utf-8";
@@ -2003,19 +2028,31 @@ app.post(
 
     if (format === "json") {
       mimeType = "application/json; charset=utf-8";
-      content = EJSON.stringify(docs, { relaxed: false, indent: 2 });
+      content = runtime.driver
+        ? JSON.stringify(docs, null, 2)
+        : EJSON.stringify(docs, { relaxed: false, indent: 2 });
     } else if (format === "yaml") {
       mimeType = "application/x-yaml; charset=utf-8";
-      content = yaml.dump(JSON.parse(EJSON.stringify(docs, { relaxed: true })));
+      content = yaml.dump(
+        runtime.driver ? docs : JSON.parse(EJSON.stringify(docs, { relaxed: true })),
+      );
     } else if (format === "csv") {
       mimeType = "text/csv; charset=utf-8";
       content = toCsv(docs);
     } else if (format === "ndjson") {
       mimeType = "application/x-ndjson; charset=utf-8";
-      content = docs.map((doc) => EJSON.stringify(doc, { relaxed: false })).join("\n");
+      content = docs
+        .map((doc) =>
+          runtime.driver
+            ? JSON.stringify(doc)
+            : EJSON.stringify(doc, { relaxed: false }),
+        )
+        .join("\n");
     } else {
       filename = `${connection.dbName}_${connection.collectionName}_${Date.now()}.txt`;
-      content = EJSON.stringify(docs, { relaxed: false, indent: 2 });
+      content = runtime.driver
+        ? JSON.stringify(docs, null, 2)
+        : EJSON.stringify(docs, { relaxed: false, indent: 2 });
     }
 
     res.setHeader("Content-Type", mimeType);
