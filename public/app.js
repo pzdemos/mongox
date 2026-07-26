@@ -2109,7 +2109,7 @@ class CanvasTable {
         }
       });
     });
-    cols.push({ key: "__select__", label: "", width: CT_DEFAULTS.selectColWidth });
+    cols.push({ key: "__select__", label: "", width: window.innerWidth < 760 ? 44 : CT_DEFAULTS.selectColWidth });
     if (!seen.has("_id")) {
       cols.push({ key: "_id", label: "_id", width: CT_DEFAULTS.idColWidth });
     }
@@ -3112,6 +3112,9 @@ class CanvasTable {
     const pos = { x: t.clientX - rect.left, y: t.clientY - rect.top };
     const cell = this._hitTest(pos.x, pos.y);
     if (!cell) return;
+
+    // 标记已处理，避免浏览器合成的 click 事件再次触发 toggle / 编辑
+    this._skipNextClick = true;
 
     // Tap on header checkbox column: toggle select-all
     if (cell.row < 0 && this._isSelectCol(cell.col)) {

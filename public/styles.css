@@ -1863,6 +1863,38 @@ button.danger {
 }
 
 @media (max-width: 760px) {
+  /* 手机端长 URI / 连接名防御性约束：强制换行 + 不允许子项撑宽父容器 */
+  .side-panel,
+  .side-panel-content,
+  .block,
+  .connection-list,
+  .connection-item,
+  .connection-item-header,
+  .connection-item-title-wrap,
+  .connection-item-uri,
+  .connection-item-meta,
+  .connect-form,
+  .connect-row {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .connection-item-uri,
+  .connection-item-meta,
+  .connect-help {
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    line-height: 1.4;
+  }
+
+  .connection-item-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    max-width: calc(100% - 56px);
+  }
+
   .layout {
     gap: 0;
   }
