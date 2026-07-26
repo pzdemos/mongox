@@ -74,15 +74,15 @@ function editingConnection() {
 }
 
 const DEFAULT_URIS = {
-  mongo: "mongodb://127.0.0.1:16016",
-  postgres: "postgresql://mongox_test:testpass123@127.0.0.1:5432/mongox_testdb",
-  mysql: "mysql://mongox_test:testpass123@127.0.0.1:3306/mongox_testdb",
+  mongo: "mongodb://mongox_test:vbdZuU7dKvqiaijA4pMCJkhj@110.40.142.210:27018/mongox_public",
+  postgres: "postgresql://mongox_test:q5EzK4BLDbUs9msQDy2hQ6j1@110.40.142.210:15432/mongox_public",
+  mysql: "mysql://mongox_test:wSISfGoU7qUKuqKoD6l53ZqY@110.40.142.210:13306/mongox_public",
 };
 
 const URI_PLACEHOLDERS = {
-  mongo: "mongodb://127.0.0.1:16016",
-  postgres: "postgresql://用户名:密码@主机:5432/库名",
-  mysql: "mysql://用户名:密码@主机:3306/库名",
+  mongo: "mongodb://用户名:密码@主机:27018/库名",
+  postgres: "postgresql://用户名:密码@主机:15432/库名",
+  mysql: "mysql://用户名:密码@主机:13306/库名",
 };
 
 function readConnectionDraft() {
