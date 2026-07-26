@@ -1157,17 +1157,24 @@ function toCsv(docs) {
 
 function normalizeErrorMessage(error) {
   const raw = error?.message || "未知错误";
+  const lower = raw.toLowerCase();
   if (raw.includes("ECONNREFUSED")) {
-    return "连接被拒绝，请确认 MongoDB 服务已启动且端口可访问。";
+    return "连接被拒绝，请确认数据库服务已启动且端口可访问。";
   }
   if (raw.includes("ENOTFOUND")) {
     return "无法解析主机名，请检查连接字符串中的域名是否正确。";
   }
-  if (raw.toLowerCase().includes("authentication failed")) {
-    return "认证失败，请检查用户名、密码和 authSource 配置。";
+  if (lower.includes("authentication failed") || lower.includes("access denied")) {
+    return "认证失败，请检查用户名、密码（SQL 库还需确认该用户有目标库的访问权限）。";
   }
-  if (raw.toLowerCase().includes("timed out")) {
-    return "连接超时，请检查网络、白名单或 MongoDB 地址。";
+  if (lower.includes("password authentication failed")) {
+    return "认证失败，请检查用户名和密码。";
+  }
+  if (lower.includes("database") && lower.includes("does not exist")) {
+    return "目标数据库不存在，请检查连接字符串中的库名。";
+  }
+  if (lower.includes("timed out")) {
+    return "连接超时，请检查网络、白名单或数据库地址。";
   }
   return raw;
 }

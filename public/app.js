@@ -3643,42 +3643,58 @@ async function handleConnectionSelect(connectionId) {
 }
 
 async function handleConnectSavedConnection(connectionId) {
-  const data = await api(`${API_BASE}/api/connections/${connectionId}/connect`, {
-    method: "POST",
-    body: "{}",
-  });
-  state.editingConnectionId = connectionId;
-  setStatus(data.status);
-  if (data.status?.uri) {
-    $("uriInput").value = data.status.uri;
-  }
-  await refreshConnections();
-  const [dbResult, collectionResult] = await Promise.all([
-    refreshDatabases({ suppressError: true }),
-    refreshCollections({ suppressError: true }),
-  ]);
+  if (state.connecting) return;
+  setConnecting(true);
+  try {
+    const data = await api(`${API_BASE}/api/connections/${connectionId}/connect`, {
+      method: "POST",
+      body: "{}",
+    });
+    state.editingConnectionId = connectionId;
+    setStatus(data.status);
+    if (data.status?.uri) {
+      $("uriInput").value = data.status.uri;
+    }
+    await refreshConnections();
+    const [dbResult, collectionResult] = await Promise.all([
+      refreshDatabases({ suppressError: true }),
+      refreshCollections({ suppressError: true }),
+    ]);
 
-  const notices = [];
-  if (data.adapted && data.adaptationReason) {
-    notices.push(`已自动适配参数（${data.adaptationReason}）`);
-  }
-  const warnings = [dbResult.warning, collectionResult.warning].filter(Boolean);
-  if (warnings.length) {
-    notices.push(`部分列表不可见：${warnings[0]}`);
-  }
+    const notices = [];
+    if (data.adapted && data.adaptationReason) {
+      notices.push(`已自动适配参数（${data.adaptationReason}）`);
+    }
+    const warnings = [dbResult.warning, collectionResult.warning].filter(Boolean);
+    if (warnings.length) {
+      notices.push(`部分列表不可见：${warnings[0]}`);
+    }
 
-  showToast(notices.length ? `连接成功，${notices.join("；")}` : "连接成功");
+    showToast(notices.length ? `连接成功，${notices.join("；")}` : "连接成功");
+  } catch (err) {
+    showToast(`连接失败：${err.message}`, true);
+  } finally {
+    setConnecting(false);
+  }
 }
 
 async function handleDisconnectConnection(connectionId) {
-  const data = await api(`${API_BASE}/api/connections/${connectionId}/disconnect`, {
-    method: "POST",
-    body: "{}",
-  });
-  setStatus(data.status);
-  await refreshConnections({ preserveDraft: connectionId !== state.editingConnectionId });
-  await loadConnectionResources();
-  showToast("已断开连接");
+  if (state.connecting) return;
+  setConnecting(true);
+  try {
+    const data = await api(`${API_BASE}/api/connections/${connectionId}/disconnect`, {
+      method: "POST",
+      body: "{}",
+    });
+    setStatus(data.status);
+    await refreshConnections({ preserveDraft: connectionId !== state.editingConnectionId });
+    await loadConnectionResources();
+    showToast("已断开连接");
+  } catch (err) {
+    showToast(`断开失败：${err.message}`, true);
+  } finally {
+    setConnecting(false);
+  }
 }
 
 async function handleDeleteConnection(connectionId) {
