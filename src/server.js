@@ -1179,6 +1179,29 @@ function normalizeErrorMessage(error) {
   return raw;
 }
 
+function classifyErrorStatusCode(error) {
+  const raw = (error?.message || "").toLowerCase();
+  if (
+    raw.includes("authentication failed") ||
+    raw.includes("access denied") ||
+    raw.includes("password authentication failed")
+  ) {
+    return 401;
+  }
+  if (
+    raw.includes("econnrefused") ||
+    raw.includes("enotfound") ||
+    raw.includes("timed out") ||
+    (raw.includes("database") && raw.includes("does not exist"))
+  ) {
+    return 400;
+  }
+  if (raw.includes("syntax error") || raw.includes("relation") || raw.includes("table")) {
+    return 400;
+  }
+  return 500;
+}
+
 async function connectSavedConnection(clientId, bucket, connection) {
   bucket.activeConnectionId = connection.id;
   return ensureRuntimeConnected(clientId, connection);
@@ -2002,12 +2025,11 @@ app.post(
 );
 
 app.use((error, _req, res, _next) => {
-  const statusCode = error.statusCode || 500;
+  const statusCode = error.statusCode || classifyErrorStatusCode(error);
   const body = {
     ok: false,
     error: normalizeErrorMessage(error),
-  };
-  if (Array.isArray(error.triedVariants) && error.triedVariants.length > 1) {
+  };  if (Array.isArray(error.triedVariants) && error.triedVariants.length > 1) {
     body.triedVariants = error.triedVariants;
   }
   res.status(statusCode).json(body);
