@@ -885,16 +885,30 @@ body.sidebar-collapsed .main-collapse-btn svg {
 }
 
 .tree-collection {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 3px 8px;
   cursor: pointer;
   border-radius: 4px;
   font-size: 0.76rem;
   color: var(--muted);
+  min-width: 0;
+}
+
+.tree-collection-name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  min-width: 0;
+}
+
+.tree-collection .driver-chip {
+  flex-shrink: 0;
+  font-size: 0.58rem;
+  padding: 1px 4px;
+  letter-spacing: 0.02em;
 }
 
 .tree-collection:hover {
@@ -996,11 +1010,20 @@ body.sidebar-collapsed .main-collapse-btn svg {
 }
 
 .tree-search-result {
+  position: relative;
   display: flex;
   flex-direction: column;
-  padding: 4px 8px;
+  padding: 4px 22px 4px 8px;
   cursor: pointer;
   border-radius: 4px;
+}
+
+.tree-search-result > .driver-chip {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 0.58rem;
+  padding: 1px 4px;
 }
 
 .tree-search-result:hover {

@@ -993,10 +993,23 @@ function renderDbTree() {
         empty.textContent = isSql ? "无表" : "无集合";
         colList.appendChild(empty);
       } else {
+        const driverType = state.status?.driverType || "mongo";
+        const chipLabel = driverType === "postgres" ? "PG" : driverType === "mysql" ? "MS" : "MG";
         collections.forEach((colName) => {
           const colRow = document.createElement("div");
           colRow.className = "tree-collection" + (dbName === currentDb && colName === currentCol ? " active" : "");
-          colRow.textContent = colName;
+
+          const chip = document.createElement("span");
+          chip.className = `driver-chip driver-chip-${driverType}`;
+          chip.textContent = chipLabel;
+          chip.title = driverType === "postgres" ? "PostgreSQL" : driverType === "mysql" ? "MySQL/MariaDB" : "MongoDB";
+
+          const nameSpan = document.createElement("span");
+          nameSpan.className = "tree-collection-name";
+          nameSpan.textContent = colName;
+
+          colRow.appendChild(chip);
+          colRow.appendChild(nameSpan);
 
           // Right-click: show index context menu
           colRow.addEventListener("contextmenu", (e) => {
@@ -1171,6 +1184,13 @@ function renderTreeSearchResults(container) {
     const row = document.createElement("div");
     row.className = "tree-search-result";
 
+    const driverType = state.status?.driverType || "mongo";
+    const chipLabel = driverType === "postgres" ? "PG" : driverType === "mysql" ? "MS" : "MG";
+    const chip = document.createElement("span");
+    chip.className = `driver-chip driver-chip-${driverType}`;
+    chip.textContent = chipLabel;
+    chip.title = driverType === "postgres" ? "PostgreSQL" : driverType === "mysql" ? "MySQL/MariaDB" : "MongoDB";
+
     const name = document.createElement("span");
     name.className = "tree-search-result-name";
     name.innerHTML = highlightMatch(collection, state.tree.searchKeyword);
@@ -1179,6 +1199,7 @@ function renderTreeSearchResults(container) {
     db.className = "tree-search-result-db";
     db.textContent = database;
 
+    row.appendChild(chip);
     row.appendChild(name);
     row.appendChild(db);
     row.addEventListener("click", () => {
