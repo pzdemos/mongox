@@ -74,9 +74,9 @@ function editingConnection() {
 }
 
 const DEFAULT_URIS = {
-  mongo: "mongodb://mongox_test:vbdZuU7dKvqiaijA4pMCJkhj@110.40.142.210:27018/mongox_public",
-  postgres: "postgresql://mongox_test:q5EzK4BLDbUs9msQDy2hQ6j1@110.40.142.210:15432/mongox_public",
-  mysql: "mysql://mongox_test:wSISfGoU7qUKuqKoD6l53ZqY@110.40.142.210:13306/mongox_public",
+  mongo: "mongodb://127.0.0.1:27017/mydb",
+  postgres: "postgresql://postgres:password@127.0.0.1:5432/mydb",
+  mysql: "mysql://root:password@127.0.0.1:3306/mydb",
 };
 
 const URI_PLACEHOLDERS = {

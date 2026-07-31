@@ -12,10 +12,12 @@ set -e
 
 cd "$(dirname "$0")/.."
 
-REMOTE_HOST="root@121.43.33.235"
-REMOTE_PATH="/var/server/mongox"
-PM2_APP_NAME="mongox"
-BRANCH="dev"
+# 部署目标配置：优先读取 scripts/deploy.env（gitignored），也可用环境变量覆盖
+[ -f scripts/deploy.env ] && source scripts/deploy.env
+REMOTE_HOST="${REMOTE_HOST:?Set REMOTE_HOST (e.g. user@your-server) in scripts/deploy.env or env}"
+REMOTE_PATH="${REMOTE_PATH:-/var/server/mongox}"
+PM2_APP_NAME="${PM2_APP_NAME:-mongox}"
+BRANCH="${BRANCH:-dev}"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'

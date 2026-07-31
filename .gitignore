@@ -8,8 +8,7 @@ coverage/
 *.log
 package-lock.json
 data/
+scripts/deploy.env
 
-# SqlX 构建产物（由 deploy 脚本打包后 scp 上传，不进 git）
-/public/**
-!/public/v1/
-!/public/v1/**
+# SqlX 构建产物随仓库分发（git clone 后即可直接运行）
+# 部署时 deploy 脚本仍会 rsync 最新构建覆盖

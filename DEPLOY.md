@@ -4,7 +4,7 @@
 
 ## 环境信息
 
-- 服务器: `root@121.43.33.235`
+- 服务器: `<REMOTE_HOST>`
 - Node.js: v21.7.3 (通过 nvm 管理)
 - PM2: 进程管理器
 - 项目路径: `/var/server/mongox`
@@ -66,26 +66,26 @@ git add .
 git commit -m "feat: xxx"
 git push origin dev
 
-ssh root@121.43.33.235 "git -C /var/server/mongox pull"
+ssh <REMOTE_HOST> "git -C /var/server/mongox pull"
 ```
 
 ### 3. 上传 public
 
 ```bash
-rsync -az --delete -e ssh public/ root@121.43.33.235:/var/server/mongox/public/
+rsync -az --delete -e ssh public/ <REMOTE_HOST>:/var/server/mongox/public/
 ```
 
 ### 4. PM2 重载
 
 ```bash
-ssh root@121.43.33.235 "/root/.nvm/versions/node/v21.7.3/bin/pm2 reload mongox"
+ssh <REMOTE_HOST> "/root/.nvm/versions/node/v21.7.3/bin/pm2 reload mongox"
 ```
 
 ### 5. 检查状态
 
 ```bash
-ssh root@121.43.33.235 "/root/.nvm/versions/node/v21.7.3/bin/pm2 status mongox"
-ssh root@121.43.33.235 "/root/.nvm/versions/node/v21.7.3/bin/pm2 logs mongox --lines 50"
+ssh <REMOTE_HOST> "/root/.nvm/versions/node/v21.7.3/bin/pm2 status mongox"
+ssh <REMOTE_HOST> "/root/.nvm/versions/node/v21.7.3/bin/pm2 logs mongox --lines 50"
 ```
 
 ## PM2 配置
@@ -103,7 +103,7 @@ pm2 restart mongox --update-env
 
 | 应用 | 本地端口 | 外部访问 |
 |------|----------|----------|
-| mongox | 5000 | http://121.43.33.235:5000 |
+| mongox | 5000 | http://<your-server>:5000 |
 | 新 UI (SqlX) | — | `/` 、`/login` |
 | 旧单页 | — | `/v1/` 、`/v1/login.html` |
 

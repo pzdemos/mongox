@@ -1,7 +1,7 @@
 {
-  "name": "mongodb-admin-web",
+  "name": "sqlx-server",
   "version": "1.0.0",
-  "description": "Web-based MongoDB management tool built with Node.js",
+  "description": "SqlX - self-hosted web client for MongoDB, PostgreSQL and MySQL",
   "type": "module",
   "main": "src/server.js",
   "scripts": {

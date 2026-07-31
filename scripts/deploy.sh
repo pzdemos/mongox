@@ -13,10 +13,12 @@ set -e
 #============================================
 # Configuration
 #============================================
-REMOTE_HOST="root@121.43.33.235"
-REMOTE_PATH="/var/server/mongox"
-PM2_APP_NAME="mongox"
-BRANCH="dev"
+# 部署目标配置：优先读取 scripts/deploy.env（gitignored），也可用环境变量覆盖
+[ -f "$(dirname "$0")/deploy.env" ] && source "$(dirname "$0")/deploy.env"
+REMOTE_HOST="${REMOTE_HOST:?Set REMOTE_HOST (e.g. user@your-server) in scripts/deploy.env or env}"
+REMOTE_PATH="${REMOTE_PATH:-/var/server/mongox}"
+PM2_APP_NAME="${PM2_APP_NAME:-mongox}"
+BRANCH="${BRANCH:-dev}"
 # PM2_CMD 由 resolve_pm2_cmd() 在运行时解析
 
 RED='\033[0;31m'
@@ -297,8 +299,7 @@ main() {
     print_section "Deployment Complete"
     print_success "All operations completed successfully!"
     echo ""
-    print_info "App URL: https://mongo.haoaiganfan.top"
-    print_info "Legacy UI: https://mongo.haoaiganfan.top/v1/"
+    [ -n "${APP_URL:-}" ] && print_info "App URL: $APP_URL"
     print_info "PM2 Status: ssh $REMOTE_HOST \"$PM2_CMD status\""
     print_info "View Logs: ssh $REMOTE_HOST \"$PM2_CMD logs $PM2_APP_NAME --lines 50\""
 

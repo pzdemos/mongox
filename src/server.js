@@ -52,6 +52,11 @@ const asyncHandler =
   (req, res, next) =>
     Promise.resolve(fn(req, res, next)).catch(next);
 
+/** 统一错误响应：保留中文 error，附加稳定 code 供前端 i18n */
+function fail(res, status, code, error) {
+  return res.status(status).json({ ok: false, code, error });
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -153,7 +158,7 @@ function requireAuth(req, res, next) {
   const cookies = parseCookies(req.headers.cookie || "");
   if (verifyAuth(cookies[AUTH_COOKIE_NAME])) return next();
   if (req.path.startsWith(API_PREFIX)) {
-    return res.status(401).json({ ok: false, error: "未登录或会话已过期" });
+    return fail(res, 401, "AUTH_REQUIRED", "未登录或会话已过期");
   }
   return res.redirect("/login");
 }
@@ -1224,15 +1229,15 @@ app.get(apiPath("/health"), (req, res) => {
 app.post(apiPath("/login"), (req, res) => {
   const { password } = req.body || {};
   if (!AUTH_PASSWORD) {
-    return res.status(500).json({ ok: false, error: "服务端未配置密码" });
+    return fail(res, 500, "AUTH_NOT_CONFIGURED", "服务端未配置密码");
   }
   if (typeof password !== "string" || password.length === 0) {
-    return res.status(400).json({ ok: false, error: "请输入密码" });
+    return fail(res, 400, "AUTH_PASSWORD_REQUIRED", "请输入密码");
   }
   const a = Buffer.from(password);
   const b = Buffer.from(AUTH_PASSWORD);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    return res.status(401).json({ ok: false, error: "密码错误" });
+    return fail(res, 401, "AUTH_INVALID", "密码错误");
   }
   const expireAt = Date.now() + AUTH_MAX_AGE;
   const cookieValue = signAuth(`${expireAt}`);
@@ -1268,7 +1273,7 @@ app.post(
     const bucket = getClientBucket(req.clientId);
     const uri = String(req.body?.uri || "").trim();
     if (!uri) {
-      return res.status(400).json({ ok: false, error: "连接字符串不能为空" });
+      fail(res, 400, "INVALID_URI", "连接字符串不能为空")
     }
 
     const typeRaw = String(req.body?.type || "mongo").trim().toLowerCase();
@@ -1321,7 +1326,7 @@ app.post(
     const bucket = getClientBucket(req.clientId);
     const connection = findConnection(bucket, req.params.id);
     if (!connection) {
-      return res.status(404).json({ ok: false, error: "连接配置不存在" });
+      fail(res, 404, "CONNECTION_NOT_FOUND", "连接配置不存在")
     }
 
     bucket.activeConnectionId = connection.id;
@@ -1342,7 +1347,7 @@ app.post(
     const bucket = getClientBucket(req.clientId);
     const connection = findConnection(bucket, req.params.id);
     if (!connection) {
-      return res.status(404).json({ ok: false, error: "连接配置不存在" });
+      fail(res, 404, "CONNECTION_NOT_FOUND", "连接配置不存在")
     }
 
     const connected = await connectSavedConnection(req.clientId, bucket, connection);
@@ -1364,7 +1369,7 @@ app.post(
     const bucket = getClientBucket(req.clientId);
     const connection = findConnection(bucket, req.params.id);
     if (!connection) {
-      return res.status(404).json({ ok: false, error: "连接配置不存在" });
+      fail(res, 404, "CONNECTION_NOT_FOUND", "连接配置不存在")
     }
 
     await disconnectRuntime(req.clientId, connection.id);
@@ -1385,7 +1390,7 @@ app.delete(
     const bucket = getClientBucket(req.clientId);
     const connection = findConnection(bucket, req.params.id);
     if (!connection) {
-      return res.status(404).json({ ok: false, error: "连接配置不存在" });
+      fail(res, 404, "CONNECTION_NOT_FOUND", "连接配置不存在")
     }
 
     await disconnectRuntime(req.clientId, connection.id);
@@ -1409,7 +1414,7 @@ app.post(
     const bucket = getClientBucket(req.clientId);
     const uri = String(req.body?.uri || "").trim();
     if (!uri) {
-      return res.status(400).json({ ok: false, error: "连接字符串不能为空" });
+      fail(res, 400, "INVALID_URI", "连接字符串不能为空")
     }
 
     const typeRaw = String(req.body?.type || "mongo").trim().toLowerCase();
@@ -1518,7 +1523,7 @@ app.post(
     const { bucket, connection, runtime } = await requireReadyContext(req);
     const dbName = String(req.body?.dbName || "").trim();
     if (!dbName) {
-      return res.status(400).json({ ok: false, error: "数据库名不能为空" });
+      fail(res, 400, "NAME_REQUIRED", "数据库名不能为空")
     }
 
     connection.dbName = dbName;
@@ -1588,7 +1593,7 @@ app.get(
         const { matches, truncated } = await runtime.driver.searchTables(keyword);
         return res.json({ ok: true, matches, truncated });
       } catch (error) {
-        return res.status(500).json({ ok: false, error: `搜索失败: ${error.message}` });
+        return fail(res, 500, "QUERY_FAILED", `搜索失败: ${error.message}`);
       }
     }
 
@@ -1633,7 +1638,7 @@ app.get(
 
       res.json({ ok: true, matches, truncated });
     } catch (error) {
-      res.status(500).json({ ok: false, error: `搜索失败: ${error.message}` });
+      fail(res, 500, "QUERY_FAILED", `搜索失败: ${error.message}`);
     }
   }),
 );
@@ -1644,7 +1649,7 @@ app.post(
     const { bucket, connection } = await requireReadyContext(req, { requireDb: true });
     const collectionName = String(req.body?.collectionName || "").trim();
     if (!collectionName) {
-      return res.status(400).json({ ok: false, error: "集合名不能为空" });
+      fail(res, 400, "NAME_REQUIRED", "集合名不能为空")
     }
 
     connection.collectionName = collectionName;
@@ -1661,7 +1666,7 @@ app.post(
     const { bucket, connection, runtime } = await requireReadyContext(req, { requireDb: true });
     const command = String(req.body?.command || "").trim();
     if (!command) {
-      return res.status(400).json({ ok: false, error: "命令不能为空" });
+      fail(res, 400, "INVALID_INPUT", "命令不能为空")
     }
 
     if (runtime.driver) {
@@ -1741,7 +1746,7 @@ app.post(
       const doc = req.body?.doc;
       const parsed = typeof doc === "string" ? safeJsonParse(doc) : doc;
       if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
-        return res.status(400).json({ ok: false, error: "插入内容必须是 JSON 对象" });
+        fail(res, 400, "INVALID_INPUT", "插入内容必须是 JSON 对象")
       }
       const result = await runtime.driver.insert(connection.dbName, connection.collectionName, parsed);
       return res.json({ ok: true, inserted: result.inserted, returning: result.returning || [] });
@@ -1749,7 +1754,7 @@ app.post(
 
     const doc = parseEjsonInput(req.body?.doc);
     if (!doc || Array.isArray(doc) || typeof doc !== "object") {
-      return res.status(400).json({ ok: false, error: "插入内容必须是对象类型文档" });
+      fail(res, 400, "INVALID_INPUT", "插入内容必须是对象类型文档")
     }
 
     const result = await getCollection(runtime, connection).insertOne(doc);
@@ -1773,7 +1778,7 @@ app.post(
       let setDoc = req.body?.setDoc || req.body?.update;
       if (typeof setDoc === "string") setDoc = safeJsonParse(setDoc);
       if (!setDoc || typeof setDoc !== "object" || Array.isArray(setDoc)) {
-        return res.status(400).json({ ok: false, error: "SET 内容必须是 JSON 对象" });
+        fail(res, 400, "INVALID_INPUT", "SET 内容必须是 JSON 对象")
       }
       const result = await runtime.driver.update(connection.dbName, connection.collectionName, {
         where,
@@ -1788,7 +1793,7 @@ app.post(
     let update = parseEjsonInput(req.body?.update);
 
     if (!update || Array.isArray(update) || typeof update !== "object") {
-      return res.status(400).json({ ok: false, error: "更新内容必须是对象" });
+      fail(res, 400, "INVALID_INPUT", "更新内容必须是对象")
     }
 
     const hasOperator = Object.keys(update).some((key) => key.startsWith("$"));
@@ -1908,10 +1913,10 @@ app.get(
     const dbName = String(req.query?.dbName || connection.dbName || "").trim();
     const collectionName = String(req.query?.collectionName || "").trim();
     if (!dbName) {
-      return res.status(400).json({ ok: false, error: "请先选择数据库" });
+      fail(res, 400, "DB_REQUIRED", "请先选择数据库")
     }
     if (!collectionName) {
-      return res.status(400).json({ ok: false, error: "表名不能为空" });
+      fail(res, 400, "NAME_REQUIRED", "表名不能为空")
     }
 
     if (runtime.driver) {
@@ -1946,18 +1951,18 @@ app.post(
       try {
         keys = JSON.parse(keys);
       } catch {
-        return res.status(400).json({ ok: false, error: "keys 必须是合法 JSON" });
+        fail(res, 400, "INVALID_INPUT", "keys 必须是合法 JSON")
       }
     }
-    if (!dbName) return res.status(400).json({ ok: false, error: "请先选择数据库" });
-    if (!collectionName) return res.status(400).json({ ok: false, error: "表名不能为空" });
+    if (!dbName) fail(res, 400, "DB_REQUIRED", "请先选择数据库")
+    if (!collectionName) fail(res, 400, "NAME_REQUIRED", "表名不能为空")
 
     let safeIndexName = "";
     try {
       if (name) safeIndexName = assertIdent(name, "索引名");
       normalizeIndexKeys(keys);
     } catch (error) {
-      return res.status(400).json({ ok: false, error: error.message });
+      return fail(res, 400, "INVALID_INPUT", error.message);
     }
 
     if (runtime.driver) {
@@ -1989,11 +1994,11 @@ app.delete(
     const dbName = String(req.body?.dbName || connection.dbName || "").trim();
     const collectionName = String(req.body?.collectionName || connection.collectionName || "").trim();
     const name = String(req.body?.name || "").trim();
-    if (!dbName) return res.status(400).json({ ok: false, error: "请先选择数据库" });
-    if (!collectionName) return res.status(400).json({ ok: false, error: "表名不能为空" });
-    if (!name) return res.status(400).json({ ok: false, error: "索引名不能为空" });
+    if (!dbName) fail(res, 400, "DB_REQUIRED", "请先选择数据库")
+    if (!collectionName) fail(res, 400, "NAME_REQUIRED", "表名不能为空")
+    if (!name) fail(res, 400, "NAME_REQUIRED", "索引名不能为空")
     if (name === "_id_") {
-      return res.status(400).json({ ok: false, error: "不能删除 MongoDB 默认 _id_ 索引" });
+      fail(res, 400, "FORBIDDEN_OP", "不能删除 MongoDB 默认 _id_ 索引")
     }
 
     if (runtime.driver) {
@@ -2017,17 +2022,17 @@ app.post(
       try {
         columns = JSON.parse(columns);
       } catch {
-        return res.status(400).json({ ok: false, error: "columns 必须是合法 JSON" });
+        fail(res, 400, "INVALID_INPUT", "columns 必须是合法 JSON")
       }
     }
-    if (!dbName) return res.status(400).json({ ok: false, error: "请先选择数据库" });
-    if (!name) return res.status(400).json({ ok: false, error: "名称不能为空" });
+    if (!dbName) fail(res, 400, "DB_REQUIRED", "请先选择数据库")
+    if (!name) fail(res, 400, "NAME_REQUIRED", "名称不能为空")
 
     let safeName;
     try {
       safeName = assertIdent(name, runtime.driver ? "表名" : "集合名");
     } catch (error) {
-      return res.status(400).json({ ok: false, error: error.message });
+      return fail(res, 400, "INVALID_INPUT", error.message);
     }
 
     if (runtime.driver) {
@@ -2052,8 +2057,8 @@ app.delete(
     const { bucket, runtime, connection } = await requireReadyContext(req, { requireDb: true });
     const dbName = String(req.body?.dbName || connection.dbName || "").trim();
     const name = String(req.body?.name || req.body?.collectionName || "").trim();
-    if (!dbName) return res.status(400).json({ ok: false, error: "请先选择数据库" });
-    if (!name) return res.status(400).json({ ok: false, error: "名称不能为空" });
+    if (!dbName) fail(res, 400, "DB_REQUIRED", "请先选择数据库")
+    if (!name) fail(res, 400, "NAME_REQUIRED", "名称不能为空")
 
     if (runtime.driver) {
       const result = await runtime.driver.dropTable(dbName, name);
@@ -2092,10 +2097,10 @@ app.get(
     const dbName = String(req.query?.dbName || connection.dbName || "").trim();
     const collectionName = String(req.query?.collectionName || "").trim();
     if (!dbName) {
-      return res.status(400).json({ ok: false, error: "请先选择数据库" });
+      fail(res, 400, "DB_REQUIRED", "请先选择数据库")
     }
     if (!collectionName) {
-      return res.status(400).json({ ok: false, error: "表名不能为空" });
+      fail(res, 400, "NAME_REQUIRED", "表名不能为空")
     }
 
     if (runtime.driver) {
@@ -2228,7 +2233,19 @@ app.use((error, _req, res, _next) => {
   const body = {
     ok: false,
     error: normalizeErrorMessage(error),
-  };  if (Array.isArray(error.triedVariants) && error.triedVariants.length > 1) {
+  };
+  if (error.code && typeof error.code === "string" && !/^[0-9]/.test(error.code)) {
+    body.code = error.code;
+  } else if (statusCode === 401) {
+    body.code = "AUTH_REQUIRED";
+  } else if (/连接|ECONN|ENOTFOUND|authentication|auth/i.test(String(error.message || ""))) {
+    body.code = "CONNECT_FAILED";
+  } else if (statusCode >= 500) {
+    body.code = "QUERY_FAILED";
+  } else {
+    body.code = "INVALID_INPUT";
+  }
+  if (Array.isArray(error.triedVariants) && error.triedVariants.length > 1) {
     body.triedVariants = error.triedVariants;
   }
   res.status(statusCode).json(body);
