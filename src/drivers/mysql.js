@@ -10,6 +10,7 @@ import {
   assertIdent,
   validateSqlType,
   normalizeIndexKeys,
+  isUniqueViolation,
 } from "./sql-base.js";
 
 const SYSTEM_DBS = new Set([
@@ -91,6 +92,39 @@ export class MysqlDriver {
     )} (${cols}) VALUES (${placeholders})`;
     const [res] = await this.pool.query(sql, params);
     return { inserted: res.affectedRows, returning: [] };
+  }
+
+  /** 批量导入：逐行插入，唯一冲突可 skip */
+  async importMany(dbName, table, docs, { onConflict = "skip" } = {}) {
+    let inserted = 0;
+    let skipped = 0;
+    let failed = 0;
+    const errors = [];
+    for (let i = 0; i < docs.length; i++) {
+      const doc = docs[i];
+      try {
+        if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
+          throw new Error("文档必须是对象");
+        }
+        await this.insert(dbName, table, doc);
+        inserted += 1;
+      } catch (error) {
+        if (onConflict === "skip" && isUniqueViolation(error)) {
+          skipped += 1;
+          continue;
+        }
+        if (onConflict === "abort") {
+          errors.push({ index: i, message: error.message || String(error) });
+          failed += 1;
+          break;
+        }
+        failed += 1;
+        if (errors.length < 20) {
+          errors.push({ index: i, message: error.message || String(error) });
+        }
+      }
+    }
+    return { inserted, skipped, failed, errors };
   }
 
   async update(dbName, table, { where = "", setDoc = {} } = {}) {

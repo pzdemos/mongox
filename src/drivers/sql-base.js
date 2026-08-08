@@ -253,3 +253,19 @@ export function assertSingleStatement(sql) {
 
   return text.trim();
 }
+
+/** 主键/唯一键冲突（用于导入 skip） */
+export function isUniqueViolation(error) {
+  if (!error) return false;
+  const code = String(error.code || "");
+  // PostgreSQL unique_violation
+  if (code === "23505") return true;
+  // MySQL / MariaDB ER_DUP_ENTRY
+  if (code === "1062" || Number(error.errno) === 1062) return true;
+  const msg = String(error.message || "").toLowerCase();
+  return (
+    msg.includes("duplicate") ||
+    msg.includes("unique constraint") ||
+    msg.includes("unique violation")
+  );
+}

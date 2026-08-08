@@ -1765,6 +1765,121 @@ app.post(
   }),
 );
 
+const IMPORT_MAX_DOCS = 5000;
+
+app.post(
+  apiPath("/import"),
+  asyncHandler(async (req, res) => {
+    const { runtime, connection } = await requireReadyContext(req, {
+      requireDb: true,
+      requireCollection: true,
+    });
+
+    const onConflict = String(req.body?.onConflict || "skip").toLowerCase();
+    if (onConflict !== "skip" && onConflict !== "abort") {
+      return fail(res, 400, "INVALID_INPUT", "onConflict 仅支持 skip 或 abort");
+    }
+
+    let docs = req.body?.docs;
+    if (typeof docs === "string") {
+      docs = parseEjsonInput(docs);
+    }
+    if (!Array.isArray(docs) || !docs.length) {
+      return fail(res, 400, "INVALID_INPUT", "docs 必须是非空数组");
+    }
+    if (docs.length > IMPORT_MAX_DOCS) {
+      return fail(
+        res,
+        400,
+        "INVALID_INPUT",
+        `单次导入最多 ${IMPORT_MAX_DOCS} 行（收到 ${docs.length}）`,
+      );
+    }
+    for (let i = 0; i < docs.length; i++) {
+      const doc = docs[i];
+      if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
+        return fail(res, 400, "INVALID_INPUT", `第 ${i + 1} 行必须是对象`);
+      }
+    }
+
+    if (runtime.driver) {
+      const result = await runtime.driver.importMany(
+        connection.dbName,
+        connection.collectionName,
+        docs,
+        { onConflict },
+      );
+      return res.json({ ok: true, ...result });
+    }
+
+    // Mongo
+    const collection = getCollection(runtime, connection);
+    const parsedDocs = docs.map((doc) =>
+      typeof doc === "string" ? parseEjsonInput(doc) : EJSON.deserialize(doc),
+    );
+
+    if (onConflict === "abort") {
+      try {
+        const result = await collection.insertMany(parsedDocs, { ordered: true });
+        return res.json({
+          ok: true,
+          inserted: result.insertedCount,
+          skipped: 0,
+          failed: 0,
+          errors: [],
+        });
+      } catch (error) {
+        const inserted = Number(error?.result?.nInserted ?? error?.insertedCount ?? 0);
+        return res.json({
+          ok: true,
+          inserted,
+          skipped: 0,
+          failed: parsedDocs.length - inserted,
+          errors: [
+            {
+              index: inserted,
+              message: error?.message || String(error),
+            },
+          ],
+        });
+      }
+    }
+
+    try {
+      const result = await collection.insertMany(parsedDocs, { ordered: false });
+      return res.json({
+        ok: true,
+        inserted: result.insertedCount,
+        skipped: 0,
+        failed: 0,
+        errors: [],
+      });
+    } catch (error) {
+      const writeErrors = Array.isArray(error?.writeErrors) ? error.writeErrors : [];
+      let skipped = 0;
+      let failed = 0;
+      const errors = [];
+      for (const we of writeErrors) {
+        const code = Number(we.code ?? we.err?.code);
+        const index = Number(we.index ?? 0);
+        const message = we.errmsg || we.err?.message || error.message || String(error);
+        if (code === 11000) {
+          skipped += 1;
+        } else {
+          failed += 1;
+          if (errors.length < 20) errors.push({ index, message });
+        }
+      }
+      const inserted = Number(
+        error?.result?.nInserted ??
+          error?.insertedCount ??
+          parsedDocs.length - writeErrors.length,
+      );
+      return res.json({ ok: true, inserted, skipped, failed, errors });
+    }
+  }),
+);
+
 app.post(
   apiPath("/update"),
   asyncHandler(async (req, res) => {
