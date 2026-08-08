@@ -22,8 +22,12 @@ const COOKIE_NAME = "mongox_client_id";
 const COOKIE_MAX_AGE = 1000 * 60 * 60 * 24 * 365;
 const AUTH_COOKIE_NAME = "mongox_auth";
 const AUTH_MAX_AGE = 1000 * 60 * 60 * 24 * 7;
-const AUTH_PASSWORD = process.env.MONGOX_PASSWORD || "";
+// 签名密钥：未配置密码时使用固定本地密钥（开放登录模式）
+const AUTH_SECRET = process.env.MONGOX_PASSWORD || "sqlx-open";
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
+const FRONTEND_DIR = process.env.SQLX_FRONTEND_DIR
+  ? path.resolve(process.env.SQLX_FRONTEND_DIR)
+  : PUBLIC_DIR;
 const PUBLIC_PATHS = new Set(["/login", "/login.html", "/v1/login.html"]);
 const PUBLIC_API_PREFIXES = [`${API_PREFIX}/login`, `${API_PREFIX}/health`];
 const DATA_DIR = path.join(__dirname, "..", "data");
@@ -39,13 +43,16 @@ app.use(express.json({ limit: "2mb" }));
 app.use(requireAuth);
 app.get("/login", (_req, res) => {
   // SqlX SPA 内置登录页；构建产物缺失时回退到 v1 旧页
-  const spaIndex = path.join(PUBLIC_DIR, "index.html");
+  const spaIndex = path.join(FRONTEND_DIR, "index.html");
   res.sendFile(spaIndex, (err) => {
     if (!err) return;
     res.sendFile(path.join(PUBLIC_DIR, "v1", "login.html"));
   });
 });
-app.use(express.static(PUBLIC_DIR));
+app.use(express.static(FRONTEND_DIR));
+if (FRONTEND_DIR !== PUBLIC_DIR) {
+  app.use(express.static(PUBLIC_DIR));
+}
 
 const asyncHandler =
   (fn) =>
@@ -126,7 +133,7 @@ function serializeCookie(name, value, maxAge) {
 }
 
 function signAuth(payload) {
-  const hmac = crypto.createHmac("sha256", AUTH_PASSWORD).update(payload).digest("hex");
+  const hmac = crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest("hex");
   return `${payload}.${hmac}`;
 }
 
@@ -135,7 +142,7 @@ function verifyAuth(cookieValue) {
   const sepIdx = cookieValue.lastIndexOf(".");
   const payload = cookieValue.slice(0, sepIdx);
   const sig = cookieValue.slice(sepIdx + 1);
-  const expected = crypto.createHmac("sha256", AUTH_PASSWORD).update(payload).digest("hex");
+  const expected = crypto.createHmac("sha256", AUTH_SECRET).update(payload).digest("hex");
   if (sig.length !== expected.length) return false;
   let a = Buffer.from(sig, "hex");
   let b = Buffer.from(expected, "hex");
@@ -154,6 +161,8 @@ function isPublicPath(reqPath) {
 }
 
 function requireAuth(req, res, next) {
+  // 未配置 MONGOX_PASSWORD：开放模式，跳过登录
+  if (!process.env.MONGOX_PASSWORD) return next();
   if (isPublicPath(req.path)) return next();
   const cookies = parseCookies(req.headers.cookie || "");
   if (verifyAuth(cookies[AUTH_COOKIE_NAME])) return next();
@@ -1226,19 +1235,8 @@ app.get(apiPath("/health"), (req, res) => {
   res.json({ ok: true, status: buildStatus(req.clientId, bucket) });
 });
 
-app.post(apiPath("/login"), (req, res) => {
-  const { password } = req.body || {};
-  if (!AUTH_PASSWORD) {
-    return fail(res, 500, "AUTH_NOT_CONFIGURED", "服务端未配置密码");
-  }
-  if (typeof password !== "string" || password.length === 0) {
-    return fail(res, 400, "AUTH_PASSWORD_REQUIRED", "请输入密码");
-  }
-  const a = Buffer.from(password);
-  const b = Buffer.from(AUTH_PASSWORD);
-  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-    return fail(res, 401, "AUTH_INVALID", "密码错误");
-  }
+app.post(apiPath("/login"), (_req, res) => {
+  // 开放登录：无需密码，点击确认即可进入
   const expireAt = Date.now() + AUTH_MAX_AGE;
   const cookieValue = signAuth(`${expireAt}`);
   res.setHeader("Set-Cookie", serializeCookie(AUTH_COOKIE_NAME, cookieValue, AUTH_MAX_AGE));
@@ -2380,14 +2378,11 @@ async function gracefulShutdown() {
 }
 
 async function bootstrap() {
-  if (!AUTH_PASSWORD) {
-    console.error("FATAL: 未设置 MONGOX_PASSWORD 环境变量，拒绝启动");
-    process.exit(1);
-  }
   await loadStore();
   const port = Number(process.env.PORT || 5000);
-  server = app.listen(port, '127.0.0.1', () => {
+  server = app.listen(port, "127.0.0.1", () => {
     console.log(`MongoDB Admin Web 已启动: http://localhost:${port}`);
+    console.log(`前端静态目录: ${FRONTEND_DIR}`);
   });
 }
 
