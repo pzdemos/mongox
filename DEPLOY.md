@@ -99,6 +99,14 @@ pm2 start ecosystem.config.cjs
 pm2 restart mongox --update-env
 ```
 
+AI 模式还需（密钥勿写入仓库）：
+
+```bash
+export DEEPSEEK_API_KEY='sk-...'
+# 可选：DEEPSEEK_API_BASE / DEEPSEEK_MODEL
+pm2 restart mongox --update-env
+```
+
 ## 端口与访问
 
 | 应用 | 本地端口 | 外部访问 |

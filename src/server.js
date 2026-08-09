@@ -12,6 +12,12 @@ import { MongoClient } from "mongodb";
 import { PostgresDriver } from "./drivers/postgres.js";
 import { MysqlDriver } from "./drivers/mysql.js";
 import { assertIdent, normalizeIndexKeys } from "./drivers/sql-base.js";
+import { deepseekChat, extractStatement, isDeepseekConfigured } from "./ai/deepseek.js";
+import {
+  analyzePlan,
+  buildAiSystemPrompt,
+  classifyStatement,
+} from "./ai/pipeline.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,6 +39,9 @@ let persistentStore = { clients: {} };
 let persistQueue = Promise.resolve();
 const runtimeStore = new Map();
 const reconnectLocks = new Map();
+/** AI 二次确认：token -> { statement, expiresAt, clientId, connectionId } */
+const aiConfirmStore = new Map();
+const AI_CONFIRM_TTL_MS = 2 * 60 * 1000;
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
@@ -1692,6 +1701,203 @@ app.post(
       status: buildStatus(req.clientId, bucket),
       command,
       ...result,
+    });
+  }),
+);
+
+function pruneAiConfirmStore(now = Date.now()) {
+  for (const [token, entry] of aiConfirmStore.entries()) {
+    if (!entry || entry.expiresAt <= now) aiConfirmStore.delete(token);
+  }
+}
+
+async function listIndexesForAi(runtime, connection) {
+  const dbName = connection.dbName;
+  const collectionName = connection.collectionName;
+  if (runtime.driver) {
+    return runtime.driver.indexes(dbName, collectionName);
+  }
+  const indexes = await runtime.client.db(dbName).collection(collectionName).indexes();
+  return indexes.map((item) => ({
+    name: item.name,
+    key: item.key,
+    unique: Boolean(item.unique),
+    sparse: Boolean(item.sparse),
+  }));
+}
+
+async function executeAiStatement({ runtime, connection, bucket, req, statement }) {
+  if (runtime.driver) {
+    const result = await runtime.driver.runCommand(statement);
+    connection.updatedAt = nowIso();
+    connection.lastUsedAt = nowIso();
+    await persistStore();
+    return {
+      ok: true,
+      status: buildStatus(req.clientId, bucket),
+      statement,
+      command: statement,
+      ...result,
+    };
+  }
+
+  const result = await runTerminalCommand(statement, runtime, connection);
+  connection.updatedAt = nowIso();
+  connection.lastUsedAt = nowIso();
+  await persistStore();
+  return {
+    ok: true,
+    status: buildStatus(req.clientId, bucket),
+    statement,
+    command: statement,
+    ...result,
+  };
+}
+
+async function explainAiStatement({ runtime, connection, statement, isSql }) {
+  if (isSql) {
+    const trimmed = String(statement || "").trim();
+    const explainSql = /^\s*explain\b/i.test(trimmed) ? trimmed : `EXPLAIN ${trimmed}`;
+    return runtime.driver.runCommand(explainSql);
+  }
+
+  const base = String(statement || "").trim().replace(/;?\s*$/, "");
+  if (/\.explain\s*\(/i.test(base)) {
+    return runTerminalCommand(base, runtime, connection);
+  }
+  // 对链式命令追加 explain；失败则上层 analyzePlan 会降级
+  const explainCmd = `${base}.explain("queryPlanner")`;
+  return runTerminalCommand(explainCmd, runtime, connection);
+}
+
+app.post(
+  apiPath("/ai/run"),
+  asyncHandler(async (req, res) => {
+    if (!isDeepseekConfigured()) {
+      return fail(res, 503, "AI_NOT_CONFIGURED", "未配置 DEEPSEEK_API_KEY，无法使用 AI 模式");
+    }
+
+    const { bucket, connection, runtime } = await requireReadyContext(req, {
+      requireDb: true,
+      requireCollection: true,
+    });
+
+    const prompt = String(req.body?.prompt || "").trim();
+    if (!prompt) {
+      return fail(res, 400, "INVALID_INPUT", "请输入自然语言描述");
+    }
+
+    const isSql = Boolean(runtime.driver);
+    const indexes = await listIndexesForAi(runtime, connection);
+    const system = buildAiSystemPrompt({
+      isSql,
+      dbName: connection.dbName,
+      collectionName: connection.collectionName,
+      indexes,
+    });
+
+    const raw = await deepseekChat({ system, user: prompt });
+    const statement = extractStatement(raw);
+    if (!statement) {
+      return fail(res, 502, "AI_PARSE", "无法从模型输出解析语句");
+    }
+
+    let kind;
+    try {
+      kind = classifyStatement(statement, isSql);
+    } catch (error) {
+      return fail(res, 400, "INVALID_INPUT", error.message || "非法语句");
+    }
+
+    const plan = await analyzePlan({
+      isSql,
+      driverType: connection.type || (isSql ? "mysql" : "mongo"),
+      statement,
+      runExplain: (stmt) => explainAiStatement({ runtime, connection, statement: stmt, isSql }),
+    });
+
+    const needsConfirm = kind === "write" || !plan.usesIndex;
+    if (needsConfirm) {
+      pruneAiConfirmStore();
+      const confirmToken = crypto.randomBytes(24).toString("hex");
+      aiConfirmStore.set(confirmToken, {
+        statement,
+        expiresAt: Date.now() + AI_CONFIRM_TTL_MS,
+        clientId: req.clientId,
+        connectionId: connection.id,
+      });
+      return res.json({
+        ok: true,
+        needsConfirm: true,
+        confirmToken,
+        kind,
+        usesIndex: plan.usesIndex,
+        statement,
+        planSummary: plan.planSummary,
+        reason:
+          kind === "write" && !plan.usesIndex
+            ? "write_and_no_index"
+            : kind === "write"
+              ? "write"
+              : "no_index",
+      });
+    }
+
+    const executed = await executeAiStatement({
+      runtime,
+      connection,
+      bucket,
+      req,
+      statement,
+    });
+    return res.json({
+      ...executed,
+      needsConfirm: false,
+      kind,
+      usesIndex: true,
+      statement,
+      planSummary: plan.planSummary,
+    });
+  }),
+);
+
+app.post(
+  apiPath("/ai/confirm"),
+  asyncHandler(async (req, res) => {
+    const confirmToken = String(req.body?.confirmToken || "").trim();
+    if (!confirmToken) {
+      return fail(res, 400, "INVALID_INPUT", "缺少 confirmToken");
+    }
+
+    pruneAiConfirmStore();
+    const entry = aiConfirmStore.get(confirmToken);
+    aiConfirmStore.delete(confirmToken);
+    if (!entry || entry.expiresAt <= Date.now()) {
+      return fail(res, 400, "AI_CONFIRM_EXPIRED", "确认已过期，请重新生成");
+    }
+    if (entry.clientId !== req.clientId) {
+      return fail(res, 403, "FORBIDDEN", "确认令牌无效");
+    }
+
+    const { bucket, connection, runtime } = await requireReadyContext(req, {
+      requireDb: true,
+      requireCollection: true,
+    });
+    if (connection.id !== entry.connectionId) {
+      return fail(res, 400, "INVALID_INPUT", "连接已切换，请重新生成");
+    }
+
+    const executed = await executeAiStatement({
+      runtime,
+      connection,
+      bucket,
+      req,
+      statement: entry.statement,
+    });
+    return res.json({
+      ...executed,
+      needsConfirm: false,
+      statement: entry.statement,
     });
   }),
 );
