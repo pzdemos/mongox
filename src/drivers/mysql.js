@@ -201,6 +201,31 @@ export class MysqlDriver {
     return [...groups.values()];
   }
 
+  /** 列结构：供 AI 模式生成语句前注入 */
+  async describeColumns(dbName, table) {
+    const [rows] = await this.pool.query(
+      `SELECT
+         COLUMN_NAME AS name,
+         DATA_TYPE AS dataType,
+         COLUMN_TYPE AS columnType,
+         IS_NULLABLE AS nullable,
+         COLUMN_KEY AS columnKey,
+         COLUMN_DEFAULT AS columnDefault
+       FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+       ORDER BY ORDINAL_POSITION`,
+      [dbName, table],
+    );
+    return (rows || []).map((r) => ({
+      name: r.name,
+      dataType: r.dataType,
+      columnType: r.columnType,
+      nullable: String(r.nullable || "").toUpperCase() === "YES",
+      key: r.columnKey || "",
+      default: r.columnDefault ?? null,
+    }));
+  }
+
   async createTable(dbName, table, { columns = [] } = {}) {
     const database = assertIdent(dbName, "库名");
     const tableName = assertIdent(table, "表名");

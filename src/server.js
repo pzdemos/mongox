@@ -1727,6 +1727,55 @@ async function listIndexesForAi(runtime, connection) {
   }));
 }
 
+async function listColumnsForAi(runtime, connection) {
+  const dbName = connection.dbName;
+  const collectionName = connection.collectionName;
+  if (runtime.driver?.describeColumns) {
+    return runtime.driver.describeColumns(dbName, collectionName);
+  }
+
+  // Mongo：采样若干文档推断字段
+  const docs = await runtime.client
+    .db(dbName)
+    .collection(collectionName)
+    .find({})
+    .limit(5)
+    .toArray();
+  const fields = new Map();
+  for (const doc of docs) {
+    for (const [key, value] of Object.entries(doc || {})) {
+      if (!fields.has(key)) {
+        fields.set(key, typeof value);
+      }
+    }
+  }
+  return [...fields.entries()].map(([name, dataType]) => ({ name, dataType }));
+}
+
+async function listSampleRowsForAi(runtime, connection, limit = 3) {
+  const dbName = connection.dbName;
+  const collectionName = connection.collectionName;
+  try {
+    if (runtime.driver) {
+      const result = await runtime.driver.query(dbName, collectionName, {
+        where: "",
+        orderBy: "",
+        limit,
+      });
+      return (result.docs || []).slice(0, limit);
+    }
+    const docs = await runtime.client
+      .db(dbName)
+      .collection(collectionName)
+      .find({})
+      .limit(limit)
+      .toArray();
+    return toTransport(docs);
+  } catch {
+    return [];
+  }
+}
+
 async function executeAiStatement({ runtime, connection, bucket, req, statement }) {
   if (runtime.driver) {
     const result = await runtime.driver.runCommand(statement);
@@ -1826,6 +1875,8 @@ app.post(
       ? runtime.driver?.type || connection.type || "mysql"
       : "mongo";
     const indexes = await listIndexesForAi(runtime, connection);
+    const columns = await listColumnsForAi(runtime, connection);
+    const sampleRows = await listSampleRowsForAi(runtime, connection, 3);
     const todayIso = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Shanghai",
       year: "numeric",
@@ -1837,6 +1888,8 @@ app.post(
       dbName: connection.dbName,
       collectionName: connection.collectionName,
       indexes,
+      columns,
+      sampleRows,
       todayIso,
     });
 

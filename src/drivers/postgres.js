@@ -220,6 +220,28 @@ export class PostgresDriver {
     });
   }
 
+  /** 列结构：供 AI 模式生成语句前注入 */
+  async describeColumns(dbName, table) {
+    const res = await this.pool.query(
+      `SELECT
+         column_name AS name,
+         data_type AS "dataType",
+         udt_name AS "udtName",
+         is_nullable AS nullable,
+         column_default AS "columnDefault"
+       FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = $1
+       ORDER BY ordinal_position`,
+      [table],
+    );
+    return (res.rows || []).map((r) => ({
+      name: r.name,
+      dataType: r.dataType || r.udtName,
+      nullable: String(r.nullable || "").toUpperCase() === "YES",
+      default: r.columnDefault ?? null,
+    }));
+  }
+
   async createTable(dbName, table, { columns = [] } = {}) {
     const tableName = assertIdent(table, "表名");
     if (!Array.isArray(columns) || !columns.length) {
