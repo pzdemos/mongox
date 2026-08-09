@@ -108,6 +108,13 @@ export async function analyzePlan({ isSql, driverType, statement, runExplain }) 
   }
 }
 
+function isEjsonDateValue(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  if (!("$date" in value)) return false;
+  const d = value.$date;
+  return typeof d === "string" || (d && typeof d === "object" && "$numberLong" in d);
+}
+
 function detectStringTimeFields(sampleRows = []) {
   const hits = new Set();
   const re = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/;
@@ -115,7 +122,17 @@ function detectStringTimeFields(sampleRows = []) {
     if (!row || typeof row !== "object") continue;
     for (const [key, value] of Object.entries(row)) {
       if (typeof value === "string" && re.test(value)) hits.add(key);
-      // EJSON date object is NOT a plain string — skip
+    }
+  }
+  return [...hits];
+}
+
+function detectBsonDateFields(sampleRows = []) {
+  const hits = new Set();
+  for (const row of sampleRows) {
+    if (!row || typeof row !== "object") continue;
+    for (const [key, value] of Object.entries(row)) {
+      if (isEjsonDateValue(value)) hits.add(key);
     }
   }
   return [...hits];
@@ -147,18 +164,33 @@ function dialectRules({ driverType, dbName, collectionName, sampleRows }) {
   }
 
   const stringTimeFields = detectStringTimeFields(sampleRows);
-  const mongoTimeRules = stringTimeFields.length
-    ? [
-        `以下字段在样例中是字符串时间（不是 Date/ISODate）：${stringTimeFields.join(", ")}。`,
-        '比较时必须用同格式字符串，例如 "2026-01-21 22:19:00"；禁止 ISODate() / new Date() / {"$date":...}。',
-        '查到「某日某分」时用半开区间字符串：{"acceptedAt":{"$gte":"2026-01-21 22:19:00","$lt":"2026-01-21 22:20:00"}}。',
-        "字符串按字典序比较，格式必须与样例一致（空格分隔年月日与时分秒，不要写成 T 或 Z）。",
-      ]
-    : [
-        "若样例里时间是 {\"$date\":...} 才可用 Date/EJSON 日期；若是普通字符串则按字符串比较。",
-      ];
+  const bsonDateFields = detectBsonDateFields(sampleRows);
+  const mongoTimeRules = [];
 
-  // mongo
+  if (bsonDateFields.length) {
+    mongoTimeRules.push(
+      `以下字段在样例中是 BSON Date（EJSON $date / $numberLong）：${bsonDateFields.join(", ")}。`,
+      "用户口中的时间默认按 Asia/Shanghai（UTC+8）理解，再转换成 UTC 的 EJSON 比较。",
+      '示例：用户说 2026-01-21 22:19 → {"acceptedAt":{"$gte":{"$date":"2026-01-21T14:19:00.000Z"},"$lt":{"$date":"2026-01-21T14:20:00.000Z"}}}。',
+      "禁止把 Date 字段当字符串比较；不要写 \"2026-01-21 22:19:00\" 去匹配 $date 字段。",
+      "过滤 JSON 里优先写 {\"$date\":\"ISO-UTC\"}；若写 ISODate(\"...\") 也可以，但参数必须是 UTC ISO 字符串。",
+    );
+  }
+
+  if (stringTimeFields.length) {
+    mongoTimeRules.push(
+      `以下字段在样例中是字符串时间：${stringTimeFields.join(", ")}。`,
+      '比较时必须用同格式字符串，例如 "2026-01-21 22:19:00"；禁止对字符串字段用 Date/$date。',
+      '查到「某日某分」时用半开区间字符串：{"field":{"$gte":"2026-01-21 22:19:00","$lt":"2026-01-21 22:20:00"}}。',
+    );
+  }
+
+  if (!mongoTimeRules.length) {
+    mongoTimeRules.push(
+      "时间字段类型以样例为准：出现 $date 用 EJSON 日期（用户本地时区默认 UTC+8 转 UTC）；普通字符串则按字符串比较。",
+    );
+  }
+
   return [
     "方言: MongoDB shell。",
     `当前库: ${db}，集合: ${table}。使用 db.${table}.method(...) 形式。`,
