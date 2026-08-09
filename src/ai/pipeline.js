@@ -108,7 +108,20 @@ export async function analyzePlan({ isSql, driverType, statement, runExplain }) 
   }
 }
 
-function dialectRules({ driverType, dbName, collectionName }) {
+function detectStringTimeFields(sampleRows = []) {
+  const hits = new Set();
+  const re = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/;
+  for (const row of sampleRows) {
+    if (!row || typeof row !== "object") continue;
+    for (const [key, value] of Object.entries(row)) {
+      if (typeof value === "string" && re.test(value)) hits.add(key);
+      // EJSON date object is NOT a plain string — skip
+    }
+  }
+  return [...hits];
+}
+
+function dialectRules({ driverType, dbName, collectionName, sampleRows }) {
   const table = collectionName || "table";
   const db = dbName || "db";
 
@@ -133,11 +146,24 @@ function dialectRules({ driverType, dbName, collectionName }) {
     ].join("\n");
   }
 
+  const stringTimeFields = detectStringTimeFields(sampleRows);
+  const mongoTimeRules = stringTimeFields.length
+    ? [
+        `以下字段在样例中是字符串时间（不是 Date/ISODate）：${stringTimeFields.join(", ")}。`,
+        '比较时必须用同格式字符串，例如 "2026-01-21 22:19:00"；禁止 ISODate() / new Date() / {"$date":...}。',
+        '查到「某日某分」时用半开区间字符串：{"acceptedAt":{"$gte":"2026-01-21 22:19:00","$lt":"2026-01-21 22:20:00"}}。',
+        "字符串按字典序比较，格式必须与样例一致（空格分隔年月日与时分秒，不要写成 T 或 Z）。",
+      ]
+    : [
+        "若样例里时间是 {\"$date\":...} 才可用 Date/EJSON 日期；若是普通字符串则按字符串比较。",
+      ];
+
   // mongo
   return [
     "方言: MongoDB shell。",
     `当前库: ${db}，集合: ${table}。使用 db.${table}.method(...) 形式。`,
     '过滤条件使用合法 JSON/EJSON：正则请写 {"field":{"$regex":"pat","$options":"i"}}，禁止 /pat/ 字面量；键名建议加双引号。',
+    ...mongoTimeRules,
   ].join("\n");
 }
 
@@ -176,7 +202,7 @@ export function buildAiSystemPrompt({
     `7. 今天日期（UTC+8 日历）是 ${today}。用户只说月日未说年份时，默认用 ${today.slice(0, 4)} 年；不要臆造其它年份。`,
     "8. 日期/时间字段名必须来自表结构；范围用半开区间：>= 当天起点且 < 次日。",
     "9. 下方「最新 3 条具体数据」用于理解真实字段名、值格式与业务含义；条件必须与这些字段一致，不要编造样例里没有的列。",
-    dialectRules({ driverType: type, dbName, collectionName }),
+    dialectRules({ driverType: type, dbName, collectionName, sampleRows }),
     `表结构/字段列表:\n${columnsText}`,
     `索引列表:\n${indexText}`,
     `最新 3 条具体数据:\n${sampleText}`,
