@@ -1,6 +1,8 @@
 /**
  * 将 mongosh 风格字面量尽量转成 JSON/EJSON 可解析文本。
- * 当前主要处理正则：{username: /2/i} → {username: {"$regex":"2","$options":"i"}}
+ * - 正则：{username: /2/i} → {"$regex":...}
+ * - ISODate("...") / new Date("...") → {"$date":"..."}
+ * - ObjectId("...") → {"$oid":"..."}
  */
 
 function canStartRegex(prefix) {
@@ -10,8 +12,32 @@ function canStartRegex(prefix) {
   return /[:\[,({=!&|?]/.test(last);
 }
 
+function replaceShellConstructors(text) {
+  let s = String(text ?? "");
+  // ISODate("...") / ISODate('...')
+  s = s.replace(
+    /\bISODate\s*\(\s*(["'])([^"'\\]*(?:\\.[^"'\\]*)*)\1\s*\)/g,
+    (_, _q, inner) => JSON.stringify({ $date: inner }),
+  );
+  // new Date("...") / new Date('...')
+  s = s.replace(
+    /\bnew\s+Date\s*\(\s*(["'])([^"'\\]*(?:\\.[^"'\\]*)*)\1\s*\)/g,
+    (_, _q, inner) => JSON.stringify({ $date: inner }),
+  );
+  // new Date(msNumber)
+  s = s.replace(/\bnew\s+Date\s*\(\s*(\d{11,15})\s*\)/g, (_, ms) =>
+    JSON.stringify({ $date: { $numberLong: String(ms) } }),
+  );
+  // ObjectId("...")
+  s = s.replace(
+    /\bObjectId\s*\(\s*(["'])([a-fA-F0-9]{24})\1\s*\)/g,
+    (_, _q, id) => JSON.stringify({ $oid: id }),
+  );
+  return s;
+}
+
 export function normalizeMongoShellJsonish(text) {
-  const s = String(text ?? "");
+  const s = replaceShellConstructors(text);
   let out = "";
   let i = 0;
 
