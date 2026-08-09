@@ -1752,27 +1752,94 @@ async function listColumnsForAi(runtime, connection) {
   return [...fields.entries()].map(([name, dataType]) => ({ name, dataType }));
 }
 
-async function listSampleRowsForAi(runtime, connection, limit = 3) {
+function pickLatestOrderBy(columns, driverType) {
+  const names = (columns || []).map((c) => String(c?.name || "")).filter(Boolean);
+  if (!names.length) {
+    return driverType === "mongo" ? null : null;
+  }
+  const lowerMap = new Map(names.map((n) => [n.toLowerCase(), n]));
+  const preferred = [
+    "updated_at",
+    "updatedAt",
+    "created_at",
+    "createdAt",
+    "create_time",
+    "update_time",
+    "timestamp",
+    "ts",
+    "time",
+    "datetime",
+    "date",
+    "id",
+    "_id",
+  ];
+  for (const key of preferred) {
+    const hit = lowerMap.get(key.toLowerCase());
+    if (hit) {
+      if (driverType === "postgres") return `"${hit}" DESC`;
+      if (driverType === "mysql") return `\`${hit}\` DESC`;
+      return hit;
+    }
+  }
+  // 再找类型像时间的列
+  for (const col of columns || []) {
+    const dt = String(col?.dataType || col?.columnType || "").toLowerCase();
+    if (/(timestamp|datetime|date|time)/.test(dt) && col.name) {
+      if (driverType === "postgres") return `"${col.name}" DESC`;
+      if (driverType === "mysql") return `\`${col.name}\` DESC`;
+      return col.name;
+    }
+  }
+  const first = names[0];
+  if (driverType === "postgres") return `"${first}" DESC`;
+  if (driverType === "mysql") return `\`${first}\` DESC`;
+  return first;
+}
+
+async function listSampleRowsForAi(runtime, connection, columns = [], limit = 3) {
   const dbName = connection.dbName;
   const collectionName = connection.collectionName;
+  const driverType = runtime.driver?.type || connection.type || "mongo";
   try {
     if (runtime.driver) {
+      const orderBy = pickLatestOrderBy(columns, driverType) || "";
       const result = await runtime.driver.query(dbName, collectionName, {
         where: "",
-        orderBy: "",
+        orderBy,
         limit,
       });
       return (result.docs || []).slice(0, limit);
     }
+    const sortField = pickLatestOrderBy(columns, "mongo") || "_id";
     const docs = await runtime.client
       .db(dbName)
       .collection(collectionName)
       .find({})
+      .sort({ [sortField]: -1 })
       .limit(limit)
       .toArray();
     return toTransport(docs);
   } catch {
-    return [];
+    try {
+      // 排序失败时退回无序最新尝试：仅 LIMIT
+      if (runtime.driver) {
+        const result = await runtime.driver.query(dbName, collectionName, {
+          where: "",
+          orderBy: "",
+          limit,
+        });
+        return (result.docs || []).slice(0, limit);
+      }
+      const docs = await runtime.client
+        .db(dbName)
+        .collection(collectionName)
+        .find({})
+        .limit(limit)
+        .toArray();
+      return toTransport(docs);
+    } catch {
+      return [];
+    }
   }
 }
 
@@ -1876,7 +1943,7 @@ app.post(
       : "mongo";
     const indexes = await listIndexesForAi(runtime, connection);
     const columns = await listColumnsForAi(runtime, connection);
-    const sampleRows = await listSampleRowsForAi(runtime, connection, 3);
+    const sampleRows = await listSampleRowsForAi(runtime, connection, columns, 3);
     const todayIso = new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Shanghai",
       year: "numeric",

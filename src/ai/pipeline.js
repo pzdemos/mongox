@@ -156,7 +156,7 @@ export function buildAiSystemPrompt({
   const indexText = indexes?.length ? JSON.stringify(indexes, null, 2) : "[]";
   const columnsText = columns?.length ? JSON.stringify(columns, null, 2) : "[]";
   const sampleText = sampleRows?.length
-    ? JSON.stringify(sampleRows, null, 2).slice(0, 3000)
+    ? JSON.stringify(sampleRows, null, 2).slice(0, 4000)
     : "[]";
   const today = todayIso || new Date().toISOString().slice(0, 10);
   const columnNames = (columns || [])
@@ -170,14 +170,15 @@ export function buildAiSystemPrompt({
     '1. 只输出 JSON：{"statement":"..."}，不要解释。',
     "2. 只生成一条语句，禁止多语句与分号拼接。",
     "3. 只能使用「表结构/字段列表」中真实存在的字段名；严禁臆造列名（例如表里没有 ts 就绝不能写 ts）。",
-    `4. 当前表可用字段: ${columnNames || "(未知，请仅用样例行中出现的键)"}。`,
+    `4. 当前表可用字段: ${columnNames || "(未知，请仅用最新样例行中出现的键)"}。`,
     "5. 优先使用下列索引字段写过滤条件，避免全表/全集合扫描。",
     "6. 查询默认加合理 LIMIT（如 20），除非用户明确要求更多。",
     `7. 今天日期（UTC+8 日历）是 ${today}。用户只说月日未说年份时，默认用 ${today.slice(0, 4)} 年；不要臆造其它年份。`,
     "8. 日期/时间字段名必须来自表结构；范围用半开区间：>= 当天起点且 < 次日。",
+    "9. 下方「最新 3 条具体数据」用于理解真实字段名、值格式与业务含义；条件必须与这些字段一致，不要编造样例里没有的列。",
     dialectRules({ driverType: type, dbName, collectionName }),
     `表结构/字段列表:\n${columnsText}`,
     `索引列表:\n${indexText}`,
-    `样例行(仅供理解字段含义，勿照抄不存在的条件):\n${sampleText}`,
+    `最新 3 条具体数据:\n${sampleText}`,
   ].join("\n");
 }
