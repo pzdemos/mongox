@@ -141,11 +141,12 @@ function dialectRules({ driverType, dbName, collectionName }) {
   ].join("\n");
 }
 
-export function buildAiSystemPrompt({ driverType, dbName, collectionName, indexes }) {
+export function buildAiSystemPrompt({ driverType, dbName, collectionName, indexes, todayIso }) {
   const type = String(driverType || "mongo").toLowerCase();
   const dialectLabel =
     type === "postgres" ? "PostgreSQL" : type === "mysql" ? "MySQL" : "MongoDB shell";
   const indexText = indexes?.length ? JSON.stringify(indexes, null, 2) : "[]";
+  const today = todayIso || new Date().toISOString().slice(0, 10);
 
   return [
     `你是 ${dialectLabel} 助手，为管理工具生成可执行的单条语句。`,
@@ -154,6 +155,8 @@ export function buildAiSystemPrompt({ driverType, dbName, collectionName, indexe
     "2. 只生成一条语句，禁止多语句与分号拼接。",
     "3. 优先使用下列索引字段写过滤条件，避免全表/全集合扫描。",
     "4. 查询默认加合理 LIMIT（如 20），除非用户明确要求更多。",
+    `5. 今天日期（UTC+8 日历）是 ${today}。用户只说月日未说年份时，默认用 ${today.slice(0, 4)} 年；不要臆造其它年份。`,
+    "6. 日期范围用半开区间：>= 当天 00:00 且 < 次日，字段名以用户/表结构为准（如 ts、created_at）。",
     dialectRules({ driverType: type, dbName, collectionName }),
     `索引列表:\n${indexText}`,
   ].join("\n");

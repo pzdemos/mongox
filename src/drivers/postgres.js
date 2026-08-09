@@ -279,18 +279,20 @@ export class PostgresDriver {
     const trimmed = assertSingleStatement(String(text || ""));
     if (!trimmed) throw new Error("SQL 不能为空");
     const res = await this.pool.query(trimmed);
-    if (res.rows && res.rows.length) {
+    // SELECT/WITH 等即使 0 行也有 fields，必须按结果集返回，不能当成 exec
+    if (Array.isArray(res.fields) && res.fields.length > 0) {
+      const docs = Array.isArray(res.rows) ? res.rows.map(normalizeRow) : [];
       return {
         resultType: "rows",
-        docs: res.rows.map(normalizeRow),
-        rowCount: res.rowCount,
+        docs,
+        rowCount: docs.length,
         fields: res.fields.map((f) => f.name),
       };
     }
     return {
       resultType: "exec",
-      rowCount: res.rowCount,
-      message: `影响的行数: ${res.rowCount}`,
+      rowCount: res.rowCount ?? 0,
+      message: `影响的行数: ${res.rowCount ?? 0}`,
     };
   }
 

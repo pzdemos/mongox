@@ -1826,11 +1826,18 @@ app.post(
       ? runtime.driver?.type || connection.type || "mysql"
       : "mongo";
     const indexes = await listIndexesForAi(runtime, connection);
+    const todayIso = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Shanghai",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
     const system = buildAiSystemPrompt({
       driverType,
       dbName: connection.dbName,
       collectionName: connection.collectionName,
       indexes,
+      todayIso,
     });
 
     const raw = await deepseekChat({ system, user: prompt });

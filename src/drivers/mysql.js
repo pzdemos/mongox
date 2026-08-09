@@ -270,8 +270,14 @@ export class MysqlDriver {
     if (!trimmed) throw new Error("SQL 不能为空");
     const [rows, meta] = await this.pool.query(trimmed);
 
-    if (Array.isArray(rows) && rows.length && rows[0] && typeof rows[0] === "object") {
-      const fields = meta && Array.isArray(meta) ? meta.map((m) => m.name) : Object.keys(rows[0]);
+    // SELECT 空结果：rows=[] 且 meta 为字段列表；UPDATE 等：rows 为 ResultSetHeader
+    if (Array.isArray(rows)) {
+      const fields =
+        meta && Array.isArray(meta) && meta.length
+          ? meta.map((m) => m.name)
+          : rows[0] && typeof rows[0] === "object"
+            ? Object.keys(rows[0])
+            : [];
       return {
         resultType: "rows",
         docs: rows.map(normalizeRow),
