@@ -3,6 +3,7 @@
  */
 
 import { assertSingleStatement } from "../drivers/sql-base.js";
+export { buildAiSystemPrompt } from "./prompts/index.js";
 
 const READ_SQL = new Set(["SELECT", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "WITH"]);
 const MONGO_READ_RE =
@@ -43,13 +44,11 @@ function postgresFullScan(rows) {
     blob.includes('"node type":"seq scan"') ||
     blob.includes("seq scan")
   ) {
-    // 若同时有 index scan，仍可能混用；偏保守：出现 seq scan 即视为未充分走索引
     const hasIndex =
       blob.includes("index scan") ||
       blob.includes("index only scan") ||
       blob.includes("bitmap index");
     if (!hasIndex) return true;
-    // 有 index 也有 seq scan：仍要求确认
     return true;
   }
   return rows.some((row) => {
@@ -106,137 +105,4 @@ export async function analyzePlan({ isSql, driverType, statement, runExplain }) 
       raw: null,
     };
   }
-}
-
-function isEjsonDateValue(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  if (!("$date" in value)) return false;
-  const d = value.$date;
-  return typeof d === "string" || (d && typeof d === "object" && "$numberLong" in d);
-}
-
-function detectStringTimeFields(sampleRows = []) {
-  const hits = new Set();
-  const re = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2})?/;
-  for (const row of sampleRows) {
-    if (!row || typeof row !== "object") continue;
-    for (const [key, value] of Object.entries(row)) {
-      if (typeof value === "string" && re.test(value)) hits.add(key);
-    }
-  }
-  return [...hits];
-}
-
-function detectBsonDateFields(sampleRows = []) {
-  const hits = new Set();
-  for (const row of sampleRows) {
-    if (!row || typeof row !== "object") continue;
-    for (const [key, value] of Object.entries(row)) {
-      if (isEjsonDateValue(value)) hits.add(key);
-    }
-  }
-  return [...hits];
-}
-
-function dialectRules({ driverType, dbName, collectionName, sampleRows }) {
-  const table = collectionName || "table";
-  const db = dbName || "db";
-
-  if (driverType === "postgres") {
-    return [
-      "方言: PostgreSQL（不是 MySQL）。",
-      `当前已连接数据库: ${db}。表位于 schema public。`,
-      `引用表请用 public."${table}" 或 "${table}"，禁止写成 ${db}.${table}（那会把库名误当成 schema）。`,
-      "字符串拼接用 || ，不要用 CONCAT（除非必要）。",
-      "UPDATE/DELETE 限制行数时必须用 CTE，禁止同表 IN (SELECT ... LIMIT)：",
-      `示例: WITH targets AS (SELECT id FROM public."${table}" WHERE ... LIMIT 20) UPDATE public."${table}" SET ... WHERE id IN (SELECT id FROM targets);`,
-      "LIMIT 仅用于 SELECT/CTE；不要写 MySQL 风格 UPDATE ... LIMIT。",
-    ].join("\n");
-  }
-
-  if (driverType === "mysql") {
-    return [
-      "方言: MySQL。",
-      `当前库: ${db}，表: ${table}。可用 \`${db}\`.\`${table}\` 或 \`${table}\`。`,
-      "字符串拼接可用 CONCAT(...)。",
-      `更新限行可用: UPDATE \`${table}\` SET ... WHERE ... LIMIT 20;`,
-    ].join("\n");
-  }
-
-  const stringTimeFields = detectStringTimeFields(sampleRows);
-  const bsonDateFields = detectBsonDateFields(sampleRows);
-  const mongoTimeRules = [];
-
-  if (bsonDateFields.length) {
-    mongoTimeRules.push(
-      `以下字段在样例中是 BSON Date（EJSON $date / $numberLong）：${bsonDateFields.join(", ")}。`,
-      "用户口中的时间默认按 Asia/Shanghai（UTC+8）理解，再转换成 UTC 的 EJSON 比较。",
-      '示例：用户说 2026-01-21 22:19 → {"acceptedAt":{"$gte":{"$date":"2026-01-21T14:19:00.000Z"},"$lt":{"$date":"2026-01-21T14:20:00.000Z"}}}。',
-      "禁止把 Date 字段当字符串比较；不要写 \"2026-01-21 22:19:00\" 去匹配 $date 字段。",
-      "过滤 JSON 里优先写 {\"$date\":\"ISO-UTC\"}；若写 ISODate(\"...\") 也可以，但参数必须是 UTC ISO 字符串。",
-    );
-  }
-
-  if (stringTimeFields.length) {
-    mongoTimeRules.push(
-      `以下字段在样例中是字符串时间：${stringTimeFields.join(", ")}。`,
-      '比较时必须用同格式字符串，例如 "2026-01-21 22:19:00"；禁止对字符串字段用 Date/$date。',
-      '查到「某日某分」时用半开区间字符串：{"field":{"$gte":"2026-01-21 22:19:00","$lt":"2026-01-21 22:20:00"}}。',
-    );
-  }
-
-  if (!mongoTimeRules.length) {
-    mongoTimeRules.push(
-      "时间字段类型以样例为准：出现 $date 用 EJSON 日期（用户本地时区默认 UTC+8 转 UTC）；普通字符串则按字符串比较。",
-    );
-  }
-
-  return [
-    "方言: MongoDB shell。",
-    `当前库: ${db}，集合: ${table}。使用 db.${table}.method(...) 形式。`,
-    '过滤条件使用合法 JSON/EJSON：正则请写 {"field":{"$regex":"pat","$options":"i"}}，禁止 /pat/ 字面量；键名建议加双引号。',
-    ...mongoTimeRules,
-  ].join("\n");
-}
-
-export function buildAiSystemPrompt({
-  driverType,
-  dbName,
-  collectionName,
-  indexes,
-  columns,
-  sampleRows,
-  todayIso,
-}) {
-  const type = String(driverType || "mongo").toLowerCase();
-  const dialectLabel =
-    type === "postgres" ? "PostgreSQL" : type === "mysql" ? "MySQL" : "MongoDB shell";
-  const indexText = indexes?.length ? JSON.stringify(indexes, null, 2) : "[]";
-  const columnsText = columns?.length ? JSON.stringify(columns, null, 2) : "[]";
-  const sampleText = sampleRows?.length
-    ? JSON.stringify(sampleRows, null, 2).slice(0, 4000)
-    : "[]";
-  const today = todayIso || new Date().toISOString().slice(0, 10);
-  const columnNames = (columns || [])
-    .map((c) => c?.name)
-    .filter(Boolean)
-    .join(", ");
-
-  return [
-    `你是 ${dialectLabel} 助手，为管理工具生成可执行的单条语句。`,
-    "严格规则：",
-    '1. 只输出 JSON：{"statement":"..."}，不要解释。',
-    "2. 只生成一条语句，禁止多语句与分号拼接。",
-    "3. 只能使用「表结构/字段列表」中真实存在的字段名；严禁臆造列名（例如表里没有 ts 就绝不能写 ts）。",
-    `4. 当前表可用字段: ${columnNames || "(未知，请仅用最新样例行中出现的键)"}。`,
-    "5. 优先使用下列索引字段写过滤条件，避免全表/全集合扫描。",
-    "6. 查询默认加合理 LIMIT（如 20），除非用户明确要求更多。",
-    `7. 今天日期（UTC+8 日历）是 ${today}。用户只说月日未说年份时，默认用 ${today.slice(0, 4)} 年；不要臆造其它年份。`,
-    "8. 日期/时间字段名必须来自表结构；范围用半开区间：>= 当天起点且 < 次日。",
-    "9. 下方「最新 3 条具体数据」用于理解真实字段名、值格式与业务含义；条件必须与这些字段一致，不要编造样例里没有的列。",
-    dialectRules({ driverType: type, dbName, collectionName, sampleRows }),
-    `表结构/字段列表:\n${columnsText}`,
-    `索引列表:\n${indexText}`,
-    `最新 3 条具体数据:\n${sampleText}`,
-  ].join("\n");
 }
