@@ -1758,7 +1758,14 @@ async function executeAiStatement({ runtime, connection, bucket, req, statement 
 async function explainAiStatement({ runtime, connection, statement, isSql }) {
   if (isSql) {
     const trimmed = String(statement || "").trim();
-    const explainSql = /^\s*explain\b/i.test(trimmed) ? trimmed : `EXPLAIN ${trimmed}`;
+    if (/^\s*explain\b/i.test(trimmed)) {
+      return runtime.driver.runCommand(trimmed);
+    }
+    const driverType = runtime.driver?.type || connection.type || "mysql";
+    const explainSql =
+      driverType === "postgres"
+        ? `EXPLAIN (FORMAT JSON) ${trimmed}`
+        : `EXPLAIN ${trimmed}`;
     return runtime.driver.runCommand(explainSql);
   }
 
@@ -1815,9 +1822,12 @@ app.post(
     }
 
     const isSql = Boolean(runtime.driver);
+    const driverType = isSql
+      ? runtime.driver?.type || connection.type || "mysql"
+      : "mongo";
     const indexes = await listIndexesForAi(runtime, connection);
     const system = buildAiSystemPrompt({
-      isSql,
+      driverType,
       dbName: connection.dbName,
       collectionName: connection.collectionName,
       indexes,
@@ -1838,7 +1848,7 @@ app.post(
 
     const plan = await analyzePlan({
       isSql,
-      driverType: connection.type || (isSql ? "mysql" : "mongo"),
+      driverType,
       statement,
       runExplain: (stmt) => explainAiStatement({ runtime, connection, statement: stmt, isSql }),
     });
