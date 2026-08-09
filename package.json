@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "start:cli": "node src/index.js",
-    "check": "node --check src/server.js && node --check src/index.js && node --check src/ai/deepseek.js && node --check src/ai/pipeline.js && node --check src/ai/shellNormalize.js && node --check src/ai/prompts/index.js && node --check src/ai/prompts/shared.js && node --check src/ai/prompts/mongo.js && node --check src/ai/prompts/mysql.js && node --check src/ai/prompts/postgres.js"
+    "check": "node --check src/server.js && node --check src/index.js && node --check src/ai/deepseek.js && node --check src/ai/pipeline.js && node --check src/ai/shellNormalize.js && node --check src/ai/auditLog.js && node --check src/ai/prompts/index.js && node --check src/ai/prompts/shared.js && node --check src/ai/prompts/mongo.js && node --check src/ai/prompts/mysql.js && node --check src/ai/prompts/postgres.js"
   },
   "keywords": [
     "mongodb",

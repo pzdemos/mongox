@@ -107,6 +107,8 @@ export DEEPSEEK_API_KEY='sk-...'
 pm2 restart mongox --update-env
 ```
 
+AI 生成/执行审计日志：`data/ai-audit.jsonl`（随 `data/` gitignore，服务器本地保留）。
+
 ## 端口与访问
 
 | 应用 | 本地端口 | 外部访问 |

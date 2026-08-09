@@ -19,6 +19,7 @@ import {
   classifyStatement,
 } from "./ai/pipeline.js";
 import { normalizeMongoShellJsonish } from "./ai/shellNormalize.js";
+import { aiAuditContext, appendAiAudit } from "./ai/auditLog.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1981,14 +1982,39 @@ app.post(
     });
 
     const needsConfirm = kind === "write" || !plan.usesIndex;
+    const baseAudit = {
+      ...aiAuditContext({ req, connection, driverType }),
+      prompt,
+      statement,
+      kind,
+      usesIndex: plan.usesIndex,
+      planSummary: plan.planSummary,
+    };
+
     if (needsConfirm) {
       pruneAiConfirmStore();
       const confirmToken = crypto.randomBytes(24).toString("hex");
+      const reason =
+        kind === "write" && !plan.usesIndex
+          ? "write_and_no_index"
+          : kind === "write"
+            ? "write"
+            : "no_index";
       aiConfirmStore.set(confirmToken, {
         statement,
+        prompt,
+        kind,
+        reason,
         expiresAt: Date.now() + AI_CONFIRM_TTL_MS,
         clientId: req.clientId,
         connectionId: connection.id,
+      });
+      void appendAiAudit({
+        ...baseAudit,
+        event: "generate",
+        needsConfirm: true,
+        reason,
+        executed: false,
       });
       return res.json({
         ok: true,
@@ -1998,12 +2024,7 @@ app.post(
         usesIndex: plan.usesIndex,
         statement,
         planSummary: plan.planSummary,
-        reason:
-          kind === "write" && !plan.usesIndex
-            ? "write_and_no_index"
-            : kind === "write"
-              ? "write"
-              : "no_index",
+        reason,
       });
     }
 
@@ -2013,6 +2034,23 @@ app.post(
       bucket,
       req,
       statement,
+    }).catch(async (error) => {
+      void appendAiAudit({
+        ...baseAudit,
+        event: "generate_and_execute",
+        needsConfirm: false,
+        executed: false,
+        error: error?.message || String(error),
+      });
+      throw error;
+    });
+    void appendAiAudit({
+      ...baseAudit,
+      event: "generate_and_execute",
+      needsConfirm: false,
+      executed: true,
+      resultType: executed.resultType || null,
+      rowCount: executed.rowCount ?? executed.count ?? null,
     });
     return res.json({
       ...executed,
@@ -2051,18 +2089,49 @@ app.post(
       return fail(res, 400, "INVALID_INPUT", "连接已切换，请重新生成");
     }
 
-    const executed = await executeAiStatement({
-      runtime,
-      connection,
-      bucket,
-      req,
-      statement: entry.statement,
-    });
-    return res.json({
-      ...executed,
-      needsConfirm: false,
-      statement: entry.statement,
-    });
+    const driverType = runtime.driver
+      ? runtime.driver?.type || connection.type || "mysql"
+      : "mongo";
+
+    try {
+      const executed = await executeAiStatement({
+        runtime,
+        connection,
+        bucket,
+        req,
+        statement: entry.statement,
+      });
+      void appendAiAudit({
+        ...aiAuditContext({ req, connection, driverType }),
+        event: "confirm_execute",
+        prompt: entry.prompt || null,
+        statement: entry.statement,
+        kind: entry.kind || null,
+        reason: entry.reason || null,
+        needsConfirm: true,
+        executed: true,
+        resultType: executed.resultType || null,
+        rowCount: executed.rowCount ?? executed.count ?? null,
+      });
+      return res.json({
+        ...executed,
+        needsConfirm: false,
+        statement: entry.statement,
+      });
+    } catch (error) {
+      void appendAiAudit({
+        ...aiAuditContext({ req, connection, driverType }),
+        event: "confirm_execute",
+        prompt: entry.prompt || null,
+        statement: entry.statement,
+        kind: entry.kind || null,
+        reason: entry.reason || null,
+        needsConfirm: true,
+        executed: false,
+        error: error?.message || String(error),
+      });
+      throw error;
+    }
   }),
 );
 
