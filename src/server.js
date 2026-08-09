@@ -18,6 +18,7 @@ import {
   buildAiSystemPrompt,
   classifyStatement,
 } from "./ai/pipeline.js";
+import { normalizeMongoShellJsonish } from "./ai/shellNormalize.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,7 +88,7 @@ function parseEjsonInput(input, fallback = undefined) {
     throw new Error("参数必须是 JSON/EJSON 字符串或对象");
   }
 
-  const text = input.trim();
+  const text = normalizeMongoShellJsonish(input.trim());
   try {
     return EJSON.parse(text);
   } catch (error) {
@@ -1761,13 +1762,39 @@ async function explainAiStatement({ runtime, connection, statement, isSql }) {
     return runtime.driver.runCommand(explainSql);
   }
 
-  const base = String(statement || "").trim().replace(/;?\s*$/, "");
-  if (/\.explain\s*\(/i.test(base)) {
-    return runTerminalCommand(base, runtime, connection);
+  const trimmed = String(statement || "").trim().replace(/;?\s*$/, "");
+  // 去掉尾部 .explain(...)，改用驱动原生 explain，避免链式方法未实现
+  const base = trimmed.replace(/\.explain\s*\(\s*(?:["'][^"']*["'])?\s*\)\s*$/i, "");
+  const parsed = parseTerminalCommand(base, connection.collectionName);
+  const collection = runtime.client.db(connection.dbName).collection(parsed.collectionName);
+
+  if (parsed.operation === "find" || parsed.operation === "findOne") {
+    const filter = assertPlainObject(parseEjsonInput(parsed.args[0], {}), "filter");
+    const cursor = collection.find(filter);
+    for (const call of parsed.chain || []) {
+      if (call.name === "sort") {
+        cursor.sort(assertPlainObject(parseEjsonInput(call.args[0], {}), "sort"));
+      } else if (call.name === "project") {
+        cursor.project(assertPlainObject(parseEjsonInput(call.args[0], {}), "projection"));
+      } else if (call.name === "limit") {
+        cursor.limit(parseLimit(parseEjsonInput(call.args[0], 50), 50, 500));
+      } else if (call.name === "skip") {
+        cursor.skip(parseSkip(parseEjsonInput(call.args[0], 0), 0, 100000));
+      }
+    }
+    return cursor.explain("queryPlanner");
   }
-  // 对链式命令追加 explain；失败则上层 analyzePlan 会降级
-  const explainCmd = `${base}.explain("queryPlanner")`;
-  return runTerminalCommand(explainCmd, runtime, connection);
+
+  if (parsed.operation === "aggregate") {
+    const pipeline = parseEjsonInput(parsed.args[0], []);
+    if (!Array.isArray(pipeline)) {
+      throw new Error("aggregate pipeline 必须是数组");
+    }
+    return collection.aggregate(pipeline).explain("queryPlanner");
+  }
+
+  // 其他读操作：不做硬失败，交给上层标记需确认
+  throw new Error(`暂不支持对 ${parsed.operation} 自动分析执行计划`);
 }
 
 app.post(

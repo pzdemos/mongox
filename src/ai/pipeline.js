@@ -107,7 +107,10 @@ export function buildAiSystemPrompt({ isSql, dbName, collectionName, indexes }) 
     "4. 查询默认加合理 LIMIT（如 20），除非用户明确要求更多。",
     isSql
       ? `5. 当前库: ${dbName}，表: ${collectionName}。SQL 使用该表，必要时带库名。`
-      : `5. 当前库: ${dbName}，集合: ${collectionName}。使用 db.${collectionName}.method(...) 形式。`,
+      : [
+          `5. 当前库: ${dbName}，集合: ${collectionName}。使用 db.${collectionName}.method(...) 形式。`,
+          '6. 过滤条件使用合法 JSON/EJSON：正则请写 {"field":{"$regex":"pat","$options":"i"}}，禁止 /pat/ 字面量；键名建议加双引号。',
+        ].join("\n"),
     `索引列表:\n${indexText}`,
   ].join("\n");
 }
