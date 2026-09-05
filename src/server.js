@@ -165,13 +165,9 @@ function isPublicPath(reqPath) {
 }
 
 function requireAuth(req, res, next) {
-  if (isPublicPath(req.path)) return next();
-  const cookies = parseCookies(req.headers.cookie || "");
-  if (verifyAuth(cookies[AUTH_COOKIE_NAME])) return next();
-  if (req.path.startsWith(API_PREFIX)) {
-    return fail(res, 401, "AUTH_REQUIRED", "未登录或会话已过期");
-  }
-  return res.redirect("/login");
+  // 鉴权已停用:所有请求直接放行(公网免登录模式)。
+  // 恢复鉴权:还原本函数原逻辑,参见提交 641ee0d。
+  return next();
 }
 
 app.use((req, res, next) => {
