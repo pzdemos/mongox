@@ -15,6 +15,27 @@ import {
 } from "./sql-base.js";
 
 const SYSTEM_DBS = new Set(["template0", "template1", "postgres"]);
+// PostgreSQL：表名支持 "schema.table" 复合名；无前缀时归入 public schema
+const SYSTEM_SCHEMAS = new Set(["pg_catalog", "information_schema", "pg_toast"]);
+const PK_CACHE_TTL_MS = 60_000;
+
+function splitTableIdent(table) {
+  const raw = String(table || "").trim();
+  if (!raw) throw new Error("表名不能为空");
+  const idx = raw.indexOf(".");
+  let schema = "public";
+  let name = raw;
+  if (idx > 0) {
+    schema = raw.slice(0, idx);
+    name = raw.slice(idx + 1);
+  }
+  return { schema: assertIdent(schema, "schema 名"), table: assertIdent(name, "表名") };
+}
+
+function qualifiedTableName(table) {
+  const { schema, table: name } = splitTableIdent(table);
+  return `${quoteIdentPg(schema)}.${quoteIdentPg(name)}`;
+}
 
 function buildPool(uri) {
   return new pg.Pool({
@@ -31,6 +52,7 @@ export class PostgresDriver {
     this.uri = uri;
     this.pool = null;
     this.dbName = "";
+    this._pkCache = new Map(); // 主键探测缓存：table -> { value, at }
   }
 
   async connect() {
@@ -71,16 +93,26 @@ export class PostgresDriver {
 
   async listTables(dbName) {
     const res = await this.pool.query(
-      `SELECT table_name AS name
+      `SELECT table_schema AS schema, table_name AS name
        FROM information_schema.tables
-       WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-       ORDER BY table_name`,
+       WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+         AND table_type = 'BASE TABLE'
+       ORDER BY table_schema, table_name`,
     );
-    return res.rows.map((r) => ({ name: r.name }));
+    return res.rows.map((r) => ({
+      name: r.schema === "public" ? r.name : `${r.schema}.${r.name}`,
+    }));
   }
 
-  // 未指定排序时探测主键，按主键降序返回（最新数据优先）
-  async defaultOrderBy(table) {
+  // 未指定排序时探测主键，按主键降序返回（最新数据优先）；结果带 TTL 缓存
+  async defaultOrderBy(dbName, table) {
+    const { schema, table: name } = splitTableIdent(table);
+    const cacheKey = `${dbName}.${schema}.${name}`;
+    const hit = this._pkCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < PK_CACHE_TTL_MS) {
+      return hit.value;
+    }
+
     const res = await this.pool.query(
       `SELECT kcu.column_name AS column_name
        FROM information_schema.table_constraints tc
@@ -88,22 +120,23 @@ export class PostgresDriver {
          ON tc.constraint_name = kcu.constraint_name
         AND tc.table_schema = kcu.table_schema
        WHERE tc.constraint_type = 'PRIMARY KEY'
-         AND tc.table_schema = 'public'
-         AND tc.table_name = $1
+         AND tc.table_schema = $1
+         AND tc.table_name = $2
        ORDER BY kcu.ordinal_position`,
-      [table],
+      [schema, name],
     );
     const cols = res.rows.map((r) => quoteIdentPg(r.column_name));
-    return cols.length ? ` ${cols.map((c) => `${c} DESC`).join(", ")}` : "";
+    const value = cols.length ? ` ${cols.map((c) => `${c} DESC`).join(", ")}` : "";
+    this._pkCache.set(cacheKey, { value, at: Date.now() });
+    return value;
   }
 
   async query(dbName, table, { where = "", orderBy = "", limit = 20 } = {}) {
     const w = validateWhere(where);
-    const ob = validateOrderBy(orderBy) || (await this.defaultOrderBy(table));
+    const ob = validateOrderBy(orderBy) || (await this.defaultOrderBy(dbName, table));
     const lim = parseLimit(limit);
 
-    const tableIdent = `${quoteIdentPg("public")}.${quoteIdentPg(table)}`;
-    const sql = `SELECT * FROM ${tableIdent}${w ? ` WHERE ${w}` : ""}${
+    const sql = `SELECT * FROM ${qualifiedTableName(table)}${w ? ` WHERE ${w}` : ""}${
       ob ? ` ORDER BY ${ob}` : ""
     } LIMIT ${lim}`;
 
@@ -117,9 +150,7 @@ export class PostgresDriver {
     const cols = keys.map(quoteIdentPg).join(", ");
     const values = keys.map((_, i) => `$${i + 1}`).join(", ");
     const params = keys.map((k) => reviveForSql(doc[k]));
-    const sql = `INSERT INTO ${quoteIdentPg("public")}.${quoteIdentPg(
-      table,
-    )} (${cols}) VALUES (${values}) RETURNING *`;
+    const sql = `INSERT INTO ${qualifiedTableName(table)} (${cols}) VALUES (${values}) RETURNING *`;
     const res = await this.pool.query(sql, params);
     return { inserted: res.rowCount, returning: res.rows.map(normalizeRow) };
   }
@@ -163,9 +194,7 @@ export class PostgresDriver {
     if (!keys.length) throw new Error("SET 内容不能为空");
     const sets = keys.map((k, i) => `${quoteIdentPg(k)} = $${i + 1}`).join(", ");
     const params = keys.map((k) => reviveForSql(setDoc[k]));
-    const sql = `UPDATE ${quoteIdentPg("public")}.${quoteIdentPg(
-      table,
-    )} SET ${sets}${w ? ` WHERE ${w}` : ""}`;
+    const sql = `UPDATE ${qualifiedTableName(table)} SET ${sets}${w ? ` WHERE ${w}` : ""}`;
     const res = await this.pool.query(sql, params);
     return { updated: res.rowCount };
   }
@@ -173,16 +202,15 @@ export class PostgresDriver {
   async delete(dbName, table, { where = "" } = {}) {
     const w = validateWhere(where);
     if (!w) throw new Error("DELETE 必须提供 WHERE 条件");
-    const sql = `DELETE FROM ${quoteIdentPg("public")}.${quoteIdentPg(
-      table,
-    )} WHERE ${w}`;
+    const sql = `DELETE FROM ${qualifiedTableName(table)} WHERE ${w}`;
     const res = await this.pool.query(sql);
     return { deleted: res.rowCount };
   }
 
   async stats(dbName, table) {
+    const { schema, table: name } = splitTableIdent(table);
     const countRes = await this.pool.query(
-      `SELECT count(*)::bigint AS c FROM ${quoteIdentPg("public")}.${quoteIdentPg(table)}`,
+      `SELECT count(*)::bigint AS c FROM ${qualifiedTableName(table)}`,
     );
     const count = Number(countRes.rows[0]?.c ?? 0);
 
@@ -193,16 +221,16 @@ export class PostgresDriver {
          pg_indexes_size(c.oid) AS index_size
        FROM pg_class c
        JOIN pg_namespace n ON n.oid = c.relnamespace
-       WHERE n.nspname = 'public' AND c.relname = $1`,
-      [table],
+       WHERE n.nspname = $1 AND c.relname = $2`,
+      [schema, name],
     );
     const s = statRes.rows[0] || {};
 
     const idxRes = await this.pool.query(
       `SELECT count(*)::bigint AS c
        FROM pg_indexes
-       WHERE schemaname = 'public' AND tablename = $1`,
-      [table],
+       WHERE schemaname = $1 AND tablename = $2`,
+      [schema, name],
     );
     const indexCount = Number(idxRes.rows[0]?.c ?? 0);
 
@@ -220,12 +248,13 @@ export class PostgresDriver {
   }
 
   async indexes(dbName, table) {
+    const { schema, table: name } = splitTableIdent(table);
     const res = await this.pool.query(
       `SELECT indexname AS name, indexdef AS def
        FROM pg_indexes
-       WHERE schemaname = 'public' AND tablename = $1
+       WHERE schemaname = $1 AND tablename = $2
        ORDER BY indexname`,
-      [table],
+      [schema, name],
     );
     return res.rows.map((r) => {
       const def = String(r.def || "");
@@ -240,6 +269,7 @@ export class PostgresDriver {
 
   /** 列结构：供 AI 模式生成语句前注入 */
   async describeColumns(dbName, table) {
+    const { schema, table: name } = splitTableIdent(table);
     const res = await this.pool.query(
       `SELECT
          column_name AS name,
@@ -248,9 +278,9 @@ export class PostgresDriver {
          is_nullable AS nullable,
          column_default AS "columnDefault"
        FROM information_schema.columns
-       WHERE table_schema = 'public' AND table_name = $1
+       WHERE table_schema = $1 AND table_name = $2
        ORDER BY ordinal_position`,
-      [table],
+      [schema, name],
     );
     return (res.rows || []).map((r) => ({
       name: r.name,
@@ -261,7 +291,7 @@ export class PostgresDriver {
   }
 
   async createTable(dbName, table, { columns = [] } = {}) {
-    const tableName = assertIdent(table, "表名");
+    const { schema, table: tableName } = splitTableIdent(table);
     if (!Array.isArray(columns) || !columns.length) {
       throw new Error("至少需要一列");
     }
@@ -279,20 +309,20 @@ export class PostgresDriver {
       return part;
     });
     if (primaryCount > 1) throw new Error("只能有一列 PRIMARY KEY");
-    const sql = `CREATE TABLE ${quoteIdentPg("public")}.${quoteIdentPg(tableName)} (${parts.join(", ")})`;
+    const sql = `CREATE TABLE ${quoteIdentPg(schema)}.${quoteIdentPg(tableName)} (${parts.join(", ")})`;
     await this.pool.query(sql);
-    return { name: tableName, sql };
+    return { name: schema === "public" ? tableName : `${schema}.${tableName}`, sql };
   }
 
   async dropTable(dbName, table) {
-    const tableName = assertIdent(table, "表名");
-    const sql = `DROP TABLE ${quoteIdentPg("public")}.${quoteIdentPg(tableName)}`;
+    const { schema, table: tableName } = splitTableIdent(table);
+    const sql = `DROP TABLE ${quoteIdentPg(schema)}.${quoteIdentPg(tableName)}`;
     await this.pool.query(sql);
-    return { name: tableName, sql };
+    return { name: schema === "public" ? tableName : `${schema}.${tableName}`, sql };
   }
 
   async createIndex(dbName, table, { name, keys, unique = false } = {}) {
-    const tableName = assertIdent(table, "表名");
+    const { schema, table: tableName } = splitTableIdent(table);
     const keyMap = normalizeIndexKeys(keys);
     const entries = Object.entries(keyMap);
     const cols = entries
@@ -302,15 +332,16 @@ export class PostgresDriver {
       ? assertIdent(name, "索引名")
       : assertIdent(`${tableName}_${entries.map(([c]) => c).join("_")}_idx`, "索引名");
     const sql = `CREATE ${unique ? "UNIQUE " : ""}INDEX ${quoteIdentPg(idxName)} ON ${quoteIdentPg(
-      "public",
+      schema,
     )}.${quoteIdentPg(tableName)} (${cols})`;
     await this.pool.query(sql);
     return { name: idxName, sql };
   }
 
   async dropIndex(dbName, table, name) {
+    const { schema } = splitTableIdent(table);
     const idxName = assertIdent(name, "索引名");
-    const sql = `DROP INDEX ${quoteIdentPg("public")}.${quoteIdentPg(idxName)}`;
+    const sql = `DROP INDEX ${quoteIdentPg(schema)}.${quoteIdentPg(idxName)}`;
     await this.pool.query(sql);
     return { name: idxName, sql };
   }
@@ -357,11 +388,12 @@ export class PostgresDriver {
         });
         try {
           const res = await tmp.query(
-            `SELECT table_name AS name
+            `SELECT table_schema AS schema, table_name AS name
              FROM information_schema.tables
-             WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+             WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+               AND table_type = 'BASE TABLE'
                AND LOWER(table_name) LIKE '%' || $1 || '%'
-             ORDER BY table_name`,
+             ORDER BY table_schema, table_name`,
             [kw],
           );
           for (const row of res.rows) {
@@ -369,7 +401,10 @@ export class PostgresDriver {
               truncated = true;
               break;
             }
-            matches.push({ database: dbName, collection: row.name });
+            matches.push({
+              database: dbName,
+              collection: row.schema === "public" ? row.name : `${row.schema}.${row.name}`,
+            });
           }
         } finally {
           await tmp.end();

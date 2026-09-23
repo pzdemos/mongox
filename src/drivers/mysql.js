@@ -13,6 +13,9 @@ import {
   isUniqueViolation,
 } from "./sql-base.js";
 
+// 主键探测缓存 TTL：避免每次无排序查询都打一次 information_schema
+const PK_CACHE_TTL_MS = 60_000;
+
 const SYSTEM_DBS = new Set([
   "information_schema",
   "performance_schema",
@@ -26,6 +29,7 @@ export class MysqlDriver {
     this.uri = uri;
     this.pool = null;
     this.dbName = "";
+    this._pkCache = new Map(); // 主键探测缓存：db.table -> { value, at }
   }
 
   async connect() {
@@ -67,8 +71,14 @@ export class MysqlDriver {
     return rows.map((r) => ({ name: r[key] })).filter((r) => r.name);
   }
 
-  // 未指定排序时探测主键，按主键降序返回（最新数据优先）
+  // 未指定排序时探测主键，按主键降序返回（最新数据优先）；结果带 TTL 缓存
   async defaultOrderBy(dbName, table) {
+    const cacheKey = `${dbName}.${table}`;
+    const hit = this._pkCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < PK_CACHE_TTL_MS) {
+      return hit.value;
+    }
+
     // MariaDB 把 information_schema 列名返回为大写；统一用别名归一化
     const [rows] = await this.pool.query(
       `SELECT kcu.COLUMN_NAME AS column_name
@@ -83,7 +93,9 @@ export class MysqlDriver {
       [dbName, table],
     );
     const cols = (rows || []).map((r) => quoteIdentMysql(r.column_name));
-    return cols.length ? ` ${cols.map((c) => `${c} DESC`).join(", ")}` : "";
+    const value = cols.length ? ` ${cols.map((c) => `${c} DESC`).join(", ")}` : "";
+    this._pkCache.set(cacheKey, { value, at: Date.now() });
+    return value;
   }
 
   async query(dbName, table, { where = "", orderBy = "", limit = 20 } = {}) {

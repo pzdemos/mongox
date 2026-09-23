@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -8,10 +7,31 @@ import express from "express";
 import yaml from "js-yaml";
 import JSON5 from "json5";
 import { EJSON } from "bson";
-import { MongoClient } from "mongodb";
-import { PostgresDriver } from "./drivers/postgres.js";
-import { MysqlDriver } from "./drivers/mysql.js";
 import { assertIdent, normalizeIndexKeys } from "./drivers/sql-base.js";
+import {
+  cleanupStaleClients,
+  findConnection,
+  findConnectionByUri,
+  getClientBucket,
+  inferConnectionName,
+  listConnections,
+  loadStore,
+  normalizeConnectionRecord,
+  nowIso,
+  persistStore,
+  removeConnection,
+} from "./store.js";
+import {
+  disconnectAllRuntimes,
+  ensureRuntimeConnected,
+  getRuntime,
+  hasActiveRuntime,
+} from "./runtime.js";
+import {
+  assertSafeConnectionUri,
+  assertSafeFilter,
+  createRateLimiter,
+} from "./security.js";
 import { deepseekChat, extractStatement, isDeepseekConfigured } from "./ai/deepseek.js";
 import {
   analyzePlan,
@@ -34,19 +54,32 @@ const AUTH_PASSWORD = process.env.MONGOX_PASSWORD || "";
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 const PUBLIC_PATHS = new Set(["/login", "/login.html", "/v1/login.html"]);
 const PUBLIC_API_PREFIXES = [`${API_PREFIX}/login`, `${API_PREFIX}/health`];
-const DATA_DIR = path.join(__dirname, "..", "data");
-const STORE_FILE = path.join(DATA_DIR, "connections.json");
 
-let persistentStore = { clients: {} };
-let persistQueue = Promise.resolve();
-const runtimeStore = new Map();
-const reconnectLocks = new Map();
 /** AI 二次确认：token -> { statement, expiresAt, clientId, connectionId } */
 const aiConfirmStore = new Map();
 const AI_CONFIRM_TTL_MS = 2 * 60 * 1000;
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+
+// 限流：API 全局 + 连接/登录类端点严格档（零依赖，按 IP 固定窗口）
+const globalLimiter = createRateLimiter({
+  windowMs: 60_000,
+  max: Number(process.env.RATE_LIMIT_PER_MIN || 300),
+});
+const connectLimiter = createRateLimiter({
+  windowMs: 60_000,
+  max: Number(process.env.RATE_LIMIT_CONNECT_PER_MIN || 30),
+});
+const STRICT_LIMIT_PATHS = new Set(["/connect", "/connections", "/login"]);
+app.use(API_PREFIX, globalLimiter);
+app.use(API_PREFIX, (req, res, next) => {
+  if (STRICT_LIMIT_PATHS.has(req.path)) {
+    return connectLimiter(req, res, next);
+  }
+  next();
+});
+
 app.use(requireAuth);
 app.get("/login", (_req, res) => {
   // SqlX SPA 内置登录页；构建产物缺失时回退到 v1 旧页
@@ -66,10 +99,6 @@ const asyncHandler =
 /** 统一错误响应：保留中文 error，附加稳定 code 供前端 i18n */
 function fail(res, status, code, error) {
   return res.status(status).json({ ok: false, code, error });
-}
-
-function nowIso() {
-  return new Date().toISOString();
 }
 
 function toTransport(value) {
@@ -184,167 +213,6 @@ app.use((req, res, next) => {
   next();
 });
 
-function normalizeConnectionRecord(record = {}) {
-  const typeRaw = String(record.type || "mongo").trim().toLowerCase();
-  const type = ["mongo", "postgres", "mysql"].includes(typeRaw) ? typeRaw : "mongo";
-  return {
-    id: String(record.id || crypto.randomUUID()),
-    name: String(record.name || "").trim(),
-    type,
-    uri: String(record.uri || "").trim(),
-    dbName: String(record.dbName || "").trim(),
-    collectionName: String(record.collectionName || "").trim(),
-    createdAt: String(record.createdAt || nowIso()),
-    updatedAt: String(record.updatedAt || nowIso()),
-    lastUsedAt: record.lastUsedAt ? String(record.lastUsedAt) : null,
-    lastConnectedAt: record.lastConnectedAt ? String(record.lastConnectedAt) : null,
-  };
-}
-
-function normalizeBucket(rawBucket = {}) {
-  return {
-    activeConnectionId: rawBucket.activeConnectionId ? String(rawBucket.activeConnectionId) : null,
-    connections: Array.isArray(rawBucket.connections)
-      ? rawBucket.connections.map((item) => normalizeConnectionRecord(item))
-      : [],
-  };
-}
-
-async function persistStore() {
-  const content = JSON.stringify(persistentStore, null, 2);
-  persistQueue = persistQueue.then(async () => {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-    const tmpFile = `${STORE_FILE}.tmp`;
-    await fs.writeFile(tmpFile, content, "utf8");
-    await fs.rename(tmpFile, STORE_FILE);
-  });
-  return persistQueue;
-}
-
-async function loadStore() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-  try {
-    const raw = await fs.readFile(STORE_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-    const clients = {};
-    Object.entries(parsed?.clients || {}).forEach(([clientId, bucket]) => {
-      clients[clientId] = normalizeBucket(bucket);
-    });
-    persistentStore = { clients };
-  } catch (error) {
-    if (error.code !== "ENOENT") {
-      throw error;
-    }
-    persistentStore = { clients: {} };
-    await persistStore();
-  }
-}
-
-function getClientBucket(clientId) {
-  if (!persistentStore.clients[clientId]) {
-    persistentStore.clients[clientId] = normalizeBucket();
-  }
-  return persistentStore.clients[clientId];
-}
-
-function listConnections(bucket) {
-  return [...bucket.connections].sort((left, right) => {
-    const leftScore = left.lastUsedAt || left.updatedAt || left.createdAt;
-    const rightScore = right.lastUsedAt || right.updatedAt || right.createdAt;
-    return String(rightScore).localeCompare(String(leftScore));
-  });
-}
-
-function inferConnectionName(uri, type = "mongo", fallback = "未命名连接") {
-  if (!uri) {
-    return fallback;
-  }
-  try {
-    const parsed = new URL(uri);
-    const host = parsed.host || parsed.hostname;
-    if (!host) return fallback;
-    const label = type === "postgres" ? "PG" : type === "mysql" ? "MySQL" : "Mongo";
-    return `${label} @ ${host}`;
-  } catch {
-    return fallback;
-  }
-}
-
-function findConnection(bucket, connectionId) {
-  return bucket.connections.find((item) => item.id === connectionId) || null;
-}
-
-function findConnectionByUri(bucket, uri, excludeId = null) {
-  const normalized = String(uri || "").trim();
-  if (!normalized) {
-    return null;
-  }
-  return (
-    bucket.connections.find(
-      (item) => item.uri === normalized && (!excludeId || item.id !== excludeId),
-    ) || null
-  );
-}
-
-function removeConnection(bucket, connectionId) {
-  bucket.connections = bucket.connections.filter((item) => item.id !== connectionId);
-  if (bucket.activeConnectionId === connectionId) {
-    bucket.activeConnectionId = bucket.connections[0]?.id || null;
-  }
-}
-
-function runtimeBucket(clientId) {
-  if (!runtimeStore.has(clientId)) {
-    runtimeStore.set(clientId, new Map());
-  }
-  return runtimeStore.get(clientId);
-}
-
-function runtimeKey(clientId, connectionId) {
-  return `${clientId}:${connectionId}`;
-}
-
-function getRuntime(clientId, connectionId) {
-  return runtimeStore.get(clientId)?.get(connectionId) || null;
-}
-
-function setRuntime(clientId, connectionId, runtime) {
-  runtimeBucket(clientId).set(connectionId, runtime);
-}
-
-async function closeMongoClient(client) {
-  if (!client) {
-    return;
-  }
-  await client.close().catch(() => {});
-}
-
-async function disconnectRuntime(clientId, connectionId) {
-  const bucket = runtimeStore.get(clientId);
-  const runtime = bucket?.get(connectionId) || null;
-  if (bucket) {
-    bucket.delete(connectionId);
-    if (bucket.size === 0) {
-      runtimeStore.delete(clientId);
-    }
-  }
-  if (runtime?.driver) {
-    await runtime.driver.disconnect().catch(() => {});
-    return;
-  }
-  await closeMongoClient(runtime?.client);
-}
-
-async function disconnectAllRuntimes() {
-  const jobs = [];
-  runtimeStore.forEach((bucket, clientId) => {
-    bucket.forEach((_runtime, connectionId) => {
-      jobs.push(disconnectRuntime(clientId, connectionId));
-    });
-  });
-  await Promise.allSettled(jobs);
-}
-
 function maskMongoUri(uri) {
   if (!uri || typeof uri !== "string") {
     return uri;
@@ -357,248 +225,6 @@ function maskMongoUri(uri) {
     return url.toString();
   } catch {
     return uri.replace(/(mongodb(\+srv)?:\/\/[^:@]+:)[^@]+(@)/, "$1****$3");
-  }
-}
-
-function parseMongoUri(uri) {
-  try {
-    return new URL(uri);
-  } catch {
-    return null;
-  }
-}
-
-function isAuthFailure(error) {
-  const raw = (error?.message || "").toLowerCase();
-  return (
-    raw.includes("authentication failed") ||
-    raw.includes("bad auth") ||
-    raw.includes("sasl") ||
-    raw.includes("auth failed")
-  );
-}
-
-function buildDirectConnectionVariant(uri) {
-  const parsed = parseMongoUri(uri);
-  if (!parsed || parsed.host.includes(",")) {
-    return null;
-  }
-  if (parsed.searchParams.get("directConnection") === "true") {
-    return null;
-  }
-
-  const next = new URL(parsed.toString());
-  next.searchParams.set("directConnection", "true");
-  return {
-    uri: next.toString(),
-    reason: "自动追加 directConnection=true",
-  };
-}
-
-function buildAuthAdaptiveVariants(uri) {
-  const parsed = parseMongoUri(uri);
-  if (!parsed || !parsed.username) {
-    return [];
-  }
-
-  const dbName = decodeURIComponent((parsed.pathname || "").replace(/^\//, "")).trim();
-  const currentAuthSource = parsed.searchParams.get("authSource");
-  const currentMechanism = parsed.searchParams.get("authMechanism");
-
-  const authSources = [...new Set([dbName, currentAuthSource, "admin"].filter(Boolean))];
-  const mechanisms = [
-    ...new Set([currentMechanism, "SCRAM-SHA-1", "SCRAM-SHA-256"].filter(Boolean)),
-  ];
-
-  const variants = [];
-  const pushVariant = (nextUri, reason) => {
-    variants.push({ uri: nextUri, reason });
-  };
-
-  authSources.forEach((authSource) => {
-    const withAuthSource = new URL(parsed.toString());
-    withAuthSource.searchParams.set("authSource", authSource);
-    if (!withAuthSource.host.includes(",")) {
-      withAuthSource.searchParams.set("directConnection", "true");
-    }
-    pushVariant(withAuthSource.toString(), `自动切换 authSource=${authSource}`);
-
-    mechanisms.forEach((mechanism) => {
-      const withMechanism = new URL(withAuthSource.toString());
-      withMechanism.searchParams.set("authMechanism", mechanism);
-      pushVariant(
-        withMechanism.toString(),
-        `自动切换 authSource=${authSource}, authMechanism=${mechanism}`,
-      );
-    });
-  });
-
-  return variants;
-}
-
-async function connectWithUri(uri, timeoutMS = 10000) {
-  const client = new MongoClient(uri, { serverSelectionTimeoutMS: timeoutMS });
-  try {
-    await client.connect();
-    await client.db().command({ ping: 1 });
-    return client;
-  } catch (error) {
-    await client.close().catch(() => {});
-    throw error;
-  }
-}
-
-async function connectWithAdaptiveRetry(uri) {
-  const tried = [];
-  let lastError = null;
-
-  const tryConnect = async ({ uri: candidateUri, reason }, timeoutMS) => {
-    if (!candidateUri || tried.some((t) => t.uri === candidateUri)) {
-      return null;
-    }
-    tried.push({ uri: candidateUri, reason });
-
-    try {
-      const client = await connectWithUri(candidateUri, timeoutMS);
-      return { client, uri: candidateUri, reason };
-    } catch (error) {
-      lastError = error;
-      return null;
-    }
-  };
-
-  const primary = await tryConnect(
-    { uri, reason: "使用原始连接字符串" },
-    6000,
-  );
-  if (primary) {
-    return { ...primary, adapted: false };
-  }
-
-  const candidates = [];
-  const directVariant = buildDirectConnectionVariant(uri);
-  if (directVariant) {
-    candidates.push(directVariant);
-  }
-
-  if (isAuthFailure(lastError)) {
-    candidates.push(...buildAuthAdaptiveVariants(uri));
-  } else {
-    candidates.push(...buildAuthAdaptiveVariants(uri).slice(0, 4));
-  }
-
-  for (const candidate of candidates) {
-    const result = await tryConnect(candidate, 2000);
-    if (result) {
-      return { ...result, adapted: result.uri !== uri };
-    }
-  }
-
-  const err = lastError || new Error("连接失败");
-  err.triedVariants = tried;
-  err.statusCode = 502;
-  throw err;
-}
-
-async function pingRuntime(runtime) {
-  if (!runtime) return false;
-  if (runtime.driver) {
-    const now = Date.now();
-    if (runtime.lastPingAt && now - runtime.lastPingAt < 10000) return true;
-    try {
-      if (runtime.driver.type === "postgres") {
-        await runtime.driver.pool.query("SELECT 1");
-      } else if (runtime.driver.type === "mysql") {
-        await runtime.driver.pool.query("SELECT 1");
-      } else {
-        return false;
-      }
-      runtime.lastPingAt = now;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  if (!runtime.client) return false;
-
-  const now = Date.now();
-  if (runtime.lastPingAt && now - runtime.lastPingAt < 10000) {
-    return true;
-  }
-
-  try {
-    await runtime.client.db("admin").command({ ping: 1 });
-    runtime.lastPingAt = now;
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function ensureRuntimeConnected(clientId, connection, { persist = true } = {}) {
-  const current = getRuntime(clientId, connection.id);
-  if (await pingRuntime(current)) {
-    connection.lastUsedAt = nowIso();
-    if (persist) {
-      await persistStore();
-    }
-    return { runtime: current, adapted: false, reason: null };
-  }
-
-  const lockKey = runtimeKey(clientId, connection.id);
-  if (reconnectLocks.has(lockKey)) {
-    return reconnectLocks.get(lockKey);
-  }
-
-  const task = (async () => {
-    await disconnectRuntime(clientId, connection.id);
-
-    if (connection.type === "postgres" || connection.type === "mysql") {
-      const Driver = connection.type === "postgres" ? PostgresDriver : MysqlDriver;
-      const driver = new Driver(connection.uri);
-      await driver.connect();
-      const runtime = { driver, lastPingAt: Date.now() };
-      setRuntime(clientId, connection.id, runtime);
-      if (!connection.dbName) connection.dbName = driver.dbName || "";
-      connection.lastConnectedAt = nowIso();
-      connection.lastUsedAt = connection.lastConnectedAt;
-      if (persist) {
-        await persistStore();
-      }
-      return { runtime, adapted: false, reason: null };
-    }
-
-    const connected = await connectWithAdaptiveRetry(connection.uri);
-    const runtime = { client: connected.client, lastPingAt: Date.now() };
-    setRuntime(clientId, connection.id, runtime);
-
-    if (connected.uri && connected.uri !== connection.uri) {
-      connection.uri = connected.uri;
-      connection.updatedAt = nowIso();
-    }
-
-    if (!connection.dbName) {
-      connection.dbName = connected.client.db().databaseName || "";
-    }
-
-    connection.lastConnectedAt = nowIso();
-    connection.lastUsedAt = connection.lastConnectedAt;
-    if (persist) {
-      await persistStore();
-    }
-
-    return {
-      runtime,
-      adapted: connected.adapted,
-      reason: connected.adapted ? connected.reason : null,
-    };
-  })();
-
-  reconnectLocks.set(lockKey, task);
-  try {
-    return await task;
-  } finally {
-    reconnectLocks.delete(lockKey);
   }
 }
 
@@ -1285,6 +911,7 @@ app.post(
     if (!uri) {
       fail(res, 400, "INVALID_URI", "连接字符串不能为空")
     }
+    assertSafeConnectionUri(uri);
 
     const typeRaw = String(req.body?.type || "mongo").trim().toLowerCase();
     const type = ["mongo", "postgres", "mysql"].includes(typeRaw) ? typeRaw : "mongo";
@@ -1426,18 +1053,15 @@ app.post(
     if (!uri) {
       fail(res, 400, "INVALID_URI", "连接字符串不能为空")
     }
+    assertSafeConnectionUri(uri);
 
     const typeRaw = String(req.body?.type || "mongo").trim().toLowerCase();
     const type = ["mongo", "postgres", "mysql"].includes(typeRaw) ? typeRaw : "mongo";
 
     const name = String(req.body?.name || "").trim() || inferConnectionName(uri, type);
-    let connection = bucket.activeConnectionId
-      ? findConnection(bucket, bucket.activeConnectionId)
-      : null;
-
-    if (!connection) {
-      connection = findConnectionByUri(bucket, uri);
-    }
+    // 仅按 URI 匹配已有连接；匹配不到一律新建，绝不改写其他/活动连接的记录
+    // （旧逻辑会覆盖当前活动连接的 uri/type，导致已保存连接丢失与引擎串用）
+    let connection = findConnectionByUri(bucket, uri);
 
     if (!connection) {
       connection = normalizeConnectionRecord({
@@ -1447,13 +1071,11 @@ app.post(
         type,
       });
       bucket.connections.push(connection);
-      bucket.activeConnectionId = connection.id;
     } else {
       connection.name = name || connection.name;
-      connection.uri = uri;
-      connection.type = type;
       connection.updatedAt = nowIso();
     }
+    bucket.activeConnectionId = connection.id;
 
     const connected = await connectSavedConnection(req.clientId, bucket, connection);
     await persistStore();
@@ -2151,7 +1773,7 @@ app.post(
       return res.json({ ok: true, count: result.docs.length, docs: result.docs, sql: result.sql });
     }
 
-    const filter = parseEjsonInput(req.body?.filter, {});
+    const filter = assertSafeFilter(parseEjsonInput(req.body?.filter, {}));
     const projection = parseEjsonInput(req.body?.projection, undefined);
     const sort = parseEjsonInput(req.body?.sort, undefined);
     const limitRaw = Number(req.body?.limit ?? 20);
@@ -2338,7 +1960,7 @@ app.post(
       return res.json({ ok: true, updated: result.updated });
     }
 
-    const filter = parseEjsonInput(req.body?.filter, {});
+    const filter = assertSafeFilter(parseEjsonInput(req.body?.filter, {}));
     const many = Boolean(req.body?.many);
     const upsert = Boolean(req.body?.upsert);
     let update = parseEjsonInput(req.body?.update);
@@ -2382,7 +2004,7 @@ app.post(
       return res.json({ ok: true, deleted: result.deleted });
     }
 
-    const filter = parseEjsonInput(req.body?.filter, {});
+    const filter = assertSafeFilter(parseEjsonInput(req.body?.filter, {}));
     const many = Boolean(req.body?.many);
     const collection = getCollection(runtime, connection);
     const result = many
@@ -2727,7 +2349,7 @@ app.post(
       });
       docs = result.docs || [];
     } else {
-      const filter = parseEjsonInput(req.body?.filter, {});
+      const filter = assertSafeFilter(parseEjsonInput(req.body?.filter, {}));
       const projection = parseEjsonInput(req.body?.projection, undefined);
       const sort = parseEjsonInput(req.body?.sort, undefined);
       const cursor = getCollection(runtime, connection).find(filter);
@@ -2819,6 +2441,20 @@ async function bootstrap() {
     process.exit(1);
   }
   await loadStore();
+
+  // 定期清理长期不活跃的 client bucket，防止 connections.json 无限增长
+  const runClientCleanup = async (trigger) => {
+    const removed = cleanupStaleClients({ isActiveClientId: hasActiveRuntime });
+    if (removed > 0) {
+      await persistStore();
+      console.log(`[cleanup][${trigger}] 已清理 ${removed} 个不活跃客户端记录`);
+    }
+  };
+  await runClientCleanup("startup");
+  setInterval(() => {
+    void runClientCleanup("periodic").catch(() => {});
+  }, 6 * 60 * 60 * 1000).unref();
+
   const port = Number(process.env.PORT || 5000);
   server = app.listen(port, '127.0.0.1', () => {
     console.log(`MongoDB Admin Web 已启动: http://localhost:${port}`);
