@@ -76,6 +76,9 @@ function toTransport(value) {
   return JSON.parse(EJSON.stringify(value, { relaxed: false }));
 }
 
+// 查询未显式指定排序时的默认行为：按 _id 降序（最新文档优先）
+const DEFAULT_MONGO_SORT = { _id: -1 };
+
 function parseEjsonInput(input, fallback = undefined) {
   if (input === undefined || input === null || input === "") {
     return fallback;
@@ -2160,9 +2163,7 @@ app.post(
     if (projection) {
       cursor.project(projection);
     }
-    if (sort) {
-      cursor.sort(sort);
-    }
+    cursor.sort(sort || DEFAULT_MONGO_SORT);
 
     const docs = await cursor.limit(limit).toArray();
     res.json({ ok: true, count: docs.length, docs: toTransport(docs) });
@@ -2733,9 +2734,7 @@ app.post(
       if (projection) {
         cursor.project(projection);
       }
-      if (sort) {
-        cursor.sort(sort);
-      }
+      cursor.sort(sort || DEFAULT_MONGO_SORT);
       docs = await cursor.limit(limit).toArray();
     }
 

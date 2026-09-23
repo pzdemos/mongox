@@ -67,9 +67,28 @@ export class MysqlDriver {
     return rows.map((r) => ({ name: r[key] })).filter((r) => r.name);
   }
 
+  // 未指定排序时探测主键，按主键降序返回（最新数据优先）
+  async defaultOrderBy(dbName, table) {
+    // MariaDB 把 information_schema 列名返回为大写；统一用别名归一化
+    const [rows] = await this.pool.query(
+      `SELECT kcu.COLUMN_NAME AS column_name
+       FROM information_schema.TABLE_CONSTRAINTS tc
+       JOIN information_schema.KEY_COLUMN_USAGE kcu
+         ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+        AND tc.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
+       WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+         AND tc.TABLE_SCHEMA = ?
+         AND tc.TABLE_NAME = ?
+       ORDER BY kcu.ORDINAL_POSITION`,
+      [dbName, table],
+    );
+    const cols = (rows || []).map((r) => quoteIdentMysql(r.column_name));
+    return cols.length ? ` ${cols.map((c) => `${c} DESC`).join(", ")}` : "";
+  }
+
   async query(dbName, table, { where = "", orderBy = "", limit = 20 } = {}) {
     const w = validateWhere(where);
-    const ob = validateOrderBy(orderBy);
+    const ob = validateOrderBy(orderBy) || (await this.defaultOrderBy(dbName, table));
     const lim = parseLimit(limit);
 
     const tableIdent = `${quoteIdentMysql(dbName)}.${quoteIdentMysql(table)}`;

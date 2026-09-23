@@ -79,9 +79,27 @@ export class PostgresDriver {
     return res.rows.map((r) => ({ name: r.name }));
   }
 
+  // 未指定排序时探测主键，按主键降序返回（最新数据优先）
+  async defaultOrderBy(table) {
+    const res = await this.pool.query(
+      `SELECT kcu.column_name AS column_name
+       FROM information_schema.table_constraints tc
+       JOIN information_schema.key_column_usage kcu
+         ON tc.constraint_name = kcu.constraint_name
+        AND tc.table_schema = kcu.table_schema
+       WHERE tc.constraint_type = 'PRIMARY KEY'
+         AND tc.table_schema = 'public'
+         AND tc.table_name = $1
+       ORDER BY kcu.ordinal_position`,
+      [table],
+    );
+    const cols = res.rows.map((r) => quoteIdentPg(r.column_name));
+    return cols.length ? ` ${cols.map((c) => `${c} DESC`).join(", ")}` : "";
+  }
+
   async query(dbName, table, { where = "", orderBy = "", limit = 20 } = {}) {
     const w = validateWhere(where);
-    const ob = validateOrderBy(orderBy);
+    const ob = validateOrderBy(orderBy) || (await this.defaultOrderBy(table));
     const lim = parseLimit(limit);
 
     const tableIdent = `${quoteIdentPg("public")}.${quoteIdentPg(table)}`;
