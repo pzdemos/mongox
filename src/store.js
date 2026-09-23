@@ -35,12 +35,20 @@ export function normalizeConnectionRecord(record = {}) {
 }
 
 export function normalizeBucket(rawBucket = {}) {
+  const connections = Array.isArray(rawBucket.connections)
+    ? rawBucket.connections.map((item) => normalizeConnectionRecord(item))
+    : [];
+  // 兼容存量数据：老 bucket 无 lastActiveAt 时，取连接记录里最新的时间戳作为活跃时间，
+  // 避免首次部署清理时把存量桶全部当作「刚活跃」而漏清，也避免把活跃用户误清
+  const inherited = connections
+    .map((c) => c.lastUsedAt || c.updatedAt || c.createdAt)
+    .filter(Boolean)
+    .sort()
+    .pop();
   return {
     activeConnectionId: rawBucket.activeConnectionId ? String(rawBucket.activeConnectionId) : null,
-    lastActiveAt: String(rawBucket.lastActiveAt || nowIso()),
-    connections: Array.isArray(rawBucket.connections)
-      ? rawBucket.connections.map((item) => normalizeConnectionRecord(item))
-      : [],
+    lastActiveAt: String(rawBucket.lastActiveAt || inherited || nowIso()),
+    connections,
   };
 }
 
