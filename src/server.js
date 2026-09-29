@@ -805,6 +805,159 @@ function toCsv(docs) {
   return `${keys.join(",")}\n${lines.join("\n")}\n`;
 }
 
+const CSV_ESC = (value) => {
+  if (value === undefined) return "";
+  const text = typeof value === "string" ? value : EJSON.stringify(value, { relaxed: false });
+  return `"${String(text).replaceAll('"', '""')}"`;
+};
+
+// ---------- 导出全部（流式，绕过 5000 条上限） ----------
+
+const EXPORT_ALL_HARD_CAP = 100000;
+const EXPORT_BATCH = 1000;
+
+/** SQL 字面量（keyset 游标用） */
+function sqlLiteral(value) {
+  if (value === null || value === undefined) return "NULL";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "NULL";
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  if (value instanceof Date) return `'${value.toISOString()}'`;
+  if (typeof value === "object") return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+/** 按批次迭代全量数据：SQL 走主键 keyset（无主键退 OFFSET），Mongo 走原生游标 */
+async function iterateExportRows({ req, runtime, connection, onBatch }) {
+  let total = 0;
+
+  if (runtime.driver) {
+    const dbName = connection.dbName;
+    const table = connection.collectionName;
+    const baseWhere = String(req.body?.where || req.body?.filter || "").trim();
+    let pkInfo = null;
+    try {
+      pkInfo = runtime.driver.pkColumns ? await runtime.driver._pkInfo(dbName, table) : null;
+    } catch {
+      pkInfo = null;
+    }
+    const quotedPk = pkInfo?.cols || [];
+    const rawPk = pkInfo?.rawCols || (quotedPk.length ? quotedPk : []);
+    let cursorVals = null;
+    let offset = 0;
+
+    for (;;) {
+      let where = baseWhere;
+      if (cursorVals && quotedPk.length) {
+        const tuple = `(${quotedPk.join(",")})`;
+        const vals = cursorVals.map(sqlLiteral).join(",");
+        const cond = `${tuple} < (${vals})`;
+        where = baseWhere ? `(${baseWhere}) AND ${cond}` : cond;
+      }
+      const result = await runtime.driver.query(dbName, table, {
+        where,
+        orderBy: "",
+        limit: EXPORT_BATCH,
+        offset: quotedPk.length ? 0 : offset,
+      });
+      const docs = result.docs || [];
+      if (!docs.length) break;
+      await onBatch(docs);
+      total += docs.length;
+      if (total >= EXPORT_ALL_HARD_CAP) break;
+      if (docs.length < EXPORT_BATCH) break;
+      if (quotedPk.length) {
+        const last = docs[docs.length - 1];
+        const vals = rawPk.map((c) => last?.[c]);
+        if (vals.some((v) => v === undefined || v === null)) break;
+        cursorVals = vals;
+      } else {
+        offset += docs.length;
+      }
+    }
+    return total;
+  }
+
+  const filter = assertSafeFilter(parseEjsonInput(req.body?.filter, {}));
+  const projection = parseEjsonInput(req.body?.projection, undefined);
+  const sort = parseEjsonInput(req.body?.sort, undefined);
+  const cursor = getCollection(runtime, connection).find(filter);
+  if (projection) {
+    cursor.project(projection);
+  }
+  cursor.sort(sort || DEFAULT_MONGO_SORT);
+
+  let batch = [];
+  for await (const doc of cursor) {
+    batch.push(doc);
+    if (batch.length >= EXPORT_BATCH) {
+      await onBatch(batch);
+      total += batch.length;
+      batch = [];
+      if (total >= EXPORT_ALL_HARD_CAP) break;
+    }
+  }
+  if (batch.length && total < EXPORT_ALL_HARD_CAP) {
+    await onBatch(batch);
+    total += batch.length;
+  }
+  return total;
+}
+
+/** 流式导出全部：支持 json / ndjson / csv，边查边写不占大内存 */
+async function streamExportAll({ req, res, runtime, connection, format }) {
+  if (!["json", "ndjson", "csv"].includes(format)) {
+    throw Object.assign(new Error("导出全部仅支持 JSON / NDJSON / CSV 格式"), {
+      statusCode: 400,
+      code: "INVALID_INPUT",
+    });
+  }
+
+  const mimeTypes = {
+    json: "application/json; charset=utf-8",
+    ndjson: "application/x-ndjson; charset=utf-8",
+    csv: "text/csv; charset=utf-8",
+  };
+  const filename = `${connection.dbName}_${connection.collectionName}_${Date.now()}_all.${format}`;
+  res.status(200);
+  res.setHeader("Content-Type", mimeTypes[format]);
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("X-Export-Truncated", "1"); // 达到硬上限时会截断
+
+  const serialize = (doc) =>
+    runtime.driver ? JSON.stringify(doc) : EJSON.stringify(doc, { relaxed: false });
+
+  let first = true;
+  let csvHeader = null;
+  if (format === "json") res.write("[");
+
+  const total = await iterateExportRows({
+    req,
+    runtime,
+    connection,
+    onBatch: async (docs) => {
+      if (format === "csv") {
+        if (!csvHeader) {
+          csvHeader = [...new Set(docs.flatMap((d) => Object.keys(d)))].slice(0, 200);
+          res.write(`${csvHeader.join(",")}\n`);
+        }
+        for (const doc of docs) {
+          res.write(`${csvHeader.map((key) => CSV_ESC(doc[key])).join(",")}\n`);
+        }
+        return;
+      }
+      for (const doc of docs) {
+        if (!first) res.write(format === "json" ? "," : "\n");
+        res.write(serialize(doc));
+        first = false;
+      }
+    },
+  });
+
+  if (format === "json") res.write(first ? "]" : "\n]");
+  res.end();
+  console.log(`[export][all] ${connection.dbName}.${connection.collectionName} -> ${total} rows (${format})`);
+}
+
 function normalizeErrorMessage(error) {
   const raw = error?.message || "未知错误";
   const lower = raw.toLowerCase();
@@ -1493,6 +1646,46 @@ async function executeAiStatement({ runtime, connection, bucket, req, statement 
   };
 }
 
+/** 校验多轮对话历史：最多 8 轮，字符串长度受限 */
+const AI_HISTORY_MAX_TURNS = 8;
+function sanitizeAiHistory(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .slice(-AI_HISTORY_MAX_TURNS)
+    .map((item) => ({
+      prompt: String(item?.prompt || "").slice(0, 2000),
+      statement: String(item?.statement || "").slice(0, 8000),
+    }))
+    .filter((item) => item.prompt && item.statement);
+}
+
+/** 收集 schema/索引/样本，组装 AI 系统提示词（同步式与流式共用） */
+async function buildAiSystemContext({ runtime, connection }) {
+  const isSql = Boolean(runtime.driver);
+  const driverType = isSql
+    ? runtime.driver?.type || connection.type || "mysql"
+    : "mongo";
+  const indexes = await listIndexesForAi(runtime, connection);
+  const columns = await listColumnsForAi(runtime, connection);
+  const sampleRows = await listSampleRowsForAi(runtime, connection, columns, 3);
+  const todayIso = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const system = buildAiSystemPrompt({
+    driverType,
+    dbName: connection.dbName,
+    collectionName: connection.collectionName,
+    indexes,
+    columns,
+    sampleRows,
+    todayIso,
+  });
+  return { isSql, driverType, system };
+}
+
 async function explainAiStatement({ runtime, connection, statement, isSql }) {
   if (isSql) {
     const trimmed = String(statement || "").trim();
@@ -1558,31 +1751,14 @@ app.post(
     if (!prompt) {
       return fail(res, 400, "INVALID_INPUT", "请输入自然语言描述");
     }
+    const history = sanitizeAiHistory(req.body?.history);
 
-    const isSql = Boolean(runtime.driver);
-    const driverType = isSql
-      ? runtime.driver?.type || connection.type || "mysql"
-      : "mongo";
-    const indexes = await listIndexesForAi(runtime, connection);
-    const columns = await listColumnsForAi(runtime, connection);
-    const sampleRows = await listSampleRowsForAi(runtime, connection, columns, 3);
-    const todayIso = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Shanghai",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(new Date());
-    const system = buildAiSystemPrompt({
-      driverType,
-      dbName: connection.dbName,
-      collectionName: connection.collectionName,
-      indexes,
-      columns,
-      sampleRows,
-      todayIso,
+    const { isSql, driverType, system } = await buildAiSystemContext({
+      runtime,
+      connection,
     });
 
-    const raw = await deepseekChat({ system, user: prompt });
+    const raw = await deepseekChat({ system, user: prompt, history });
     const statement = extractStatement(raw);
     if (!statement) {
       return fail(res, 502, "AI_PARSE", "无法从模型输出解析语句");
@@ -1681,6 +1857,164 @@ app.post(
       statement,
       planSummary: plan.planSummary,
     });
+  }),
+);
+
+app.post(
+  apiPath("/ai/run/stream"),
+  asyncHandler(async (req, res) => {
+    if (!isDeepseekConfigured()) {
+      return fail(res, 503, "AI_NOT_CONFIGURED", "未配置 DEEPSEEK_API_KEY，无法使用 AI 模式");
+    }
+
+    const { bucket, connection, runtime } = await requireReadyContext(req, {
+      requireDb: true,
+      requireCollection: true,
+    });
+
+    const prompt = String(req.body?.prompt || "").trim();
+    if (!prompt) {
+      return fail(res, 400, "INVALID_INPUT", "请输入自然语言描述");
+    }
+    const history = sanitizeAiHistory(req.body?.history);
+
+    // 切换为 SSE：阶段事件 + 模型增量输出 + 最终结果
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    const send = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+    try {
+      send({ type: "stage", stage: "context" });
+      const { isSql, driverType, system } = await buildAiSystemContext({
+        runtime,
+        connection,
+      });
+
+      send({ type: "stage", stage: "generating" });
+      const raw = await deepseekChat({
+        system,
+        user: prompt,
+        history,
+        onDelta: (text) => send({ type: "delta", text }),
+      });
+      const statement = extractStatement(raw);
+      if (!statement) {
+        throw Object.assign(new Error("无法从模型输出解析语句"), {
+          statusCode: 502,
+          code: "AI_PARSE",
+        });
+      }
+
+      let kind;
+      try {
+        kind = classifyStatement(statement, isSql);
+      } catch (error) {
+        throw Object.assign(new Error(error.message || "非法语句"), {
+          statusCode: 400,
+          code: "INVALID_INPUT",
+        });
+      }
+
+      send({ type: "stage", stage: "plan" });
+      const plan = await analyzePlan({
+        isSql,
+        driverType,
+        statement,
+        runExplain: (stmt) =>
+          explainAiStatement({ runtime, connection, statement: stmt, isSql }),
+      });
+
+      const needsConfirm = kind === "write" || !plan.usesIndex;
+      const baseAudit = {
+        ...aiAuditContext({ req, connection, driverType }),
+        prompt,
+        statement,
+        kind,
+        usesIndex: plan.usesIndex,
+        planSummary: plan.planSummary,
+      };
+
+      if (needsConfirm) {
+        pruneAiConfirmStore();
+        const confirmToken = crypto.randomBytes(24).toString("hex");
+        const reason =
+          kind === "write" && !plan.usesIndex
+            ? "write_and_no_index"
+            : kind === "write"
+              ? "write"
+              : "no_index";
+        aiConfirmStore.set(confirmToken, {
+          statement,
+          prompt,
+          kind,
+          reason,
+          expiresAt: Date.now() + AI_CONFIRM_TTL_MS,
+          clientId: req.clientId,
+          connectionId: connection.id,
+        });
+        void appendAiAudit({
+          ...baseAudit,
+          event: "generate",
+          needsConfirm: true,
+          reason,
+          executed: false,
+        });
+        send({
+          type: "result",
+          payload: {
+            ok: true,
+            needsConfirm: true,
+            confirmToken,
+            kind,
+            usesIndex: plan.usesIndex,
+            statement,
+            planSummary: plan.planSummary,
+            reason,
+          },
+        });
+        return res.end();
+      }
+
+      send({ type: "stage", stage: "executing" });
+      const executed = await executeAiStatement({
+        runtime,
+        connection,
+        bucket,
+        req,
+        statement,
+      });
+      void appendAiAudit({
+        ...baseAudit,
+        event: "generate_and_execute",
+        needsConfirm: false,
+        executed: true,
+        resultType: executed.resultType || null,
+        rowCount: executed.rowCount ?? executed.count ?? null,
+      });
+      send({
+        type: "result",
+        payload: {
+          ...executed,
+          needsConfirm: false,
+          kind,
+          usesIndex: true,
+          statement,
+          planSummary: plan.planSummary,
+        },
+      });
+    } catch (error) {
+      send({
+        type: "error",
+        error: normalizeErrorMessage(error),
+        code: typeof error?.code === "string" ? error.code : "AI_FAILED",
+      });
+    } finally {
+      res.end();
+    }
   }),
 );
 
@@ -2335,6 +2669,9 @@ app.post(
       requireCollection: true,
     });
     const format = String(req.body?.format || "json");
+    if (req.body?.all === true) {
+      return await streamExportAll({ req, res, runtime, connection, format });
+    }
     const limitRaw = Number(req.body?.limit ?? 100);
     const limit = Number.isInteger(limitRaw)
       ? Math.min(Math.max(limitRaw, 1), 5000)

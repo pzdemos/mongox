@@ -105,12 +105,12 @@ export class PostgresDriver {
   }
 
   // 未指定排序时探测主键，按主键降序返回（最新数据优先）；结果带 TTL 缓存
-  async defaultOrderBy(dbName, table) {
+  async _pkInfo(dbName, table) {
     const { schema, table: name } = splitTableIdent(table);
     const cacheKey = `${dbName}.${schema}.${name}`;
     const hit = this._pkCache.get(cacheKey);
     if (hit && Date.now() - hit.at < PK_CACHE_TTL_MS) {
-      return hit.value;
+      return hit;
     }
 
     const res = await this.pool.query(
@@ -125,20 +125,32 @@ export class PostgresDriver {
        ORDER BY kcu.ordinal_position`,
       [schema, name],
     );
-    const cols = res.rows.map((r) => quoteIdentPg(r.column_name));
+    const rawCols = res.rows.map((r) => String(r.column_name));
+    const cols = rawCols.map(quoteIdentPg);
     const value = cols.length ? ` ${cols.map((c) => `${c} DESC`).join(", ")}` : "";
-    this._pkCache.set(cacheKey, { value, at: Date.now() });
-    return value;
+    const info = { value, cols, rawCols, at: Date.now() };
+    this._pkCache.set(cacheKey, info);
+    return info;
   }
 
-  async query(dbName, table, { where = "", orderBy = "", limit = 20 } = {}) {
+  async defaultOrderBy(dbName, table) {
+    return (await this._pkInfo(dbName, table)).value;
+  }
+
+  /** 主键列名（已加引号）；无主键返回空数组 */
+  async pkColumns(dbName, table) {
+    return (await this._pkInfo(dbName, table)).cols;
+  }
+
+  async query(dbName, table, { where = "", orderBy = "", limit = 20, offset = 0 } = {}) {
     const w = validateWhere(where);
     const ob = validateOrderBy(orderBy) || (await this.defaultOrderBy(dbName, table));
     const lim = parseLimit(limit);
+    const off = Math.max(0, Math.floor(Number(offset) || 0));
 
     const sql = `SELECT * FROM ${qualifiedTableName(table)}${w ? ` WHERE ${w}` : ""}${
       ob ? ` ORDER BY ${ob}` : ""
-    } LIMIT ${lim}`;
+    } LIMIT ${lim}${off > 0 ? ` OFFSET ${off}` : ""}`;
 
     const res = await this.pool.query(sql);
     return { docs: res.rows.map(normalizeRow), sql };

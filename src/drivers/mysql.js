@@ -72,11 +72,11 @@ export class MysqlDriver {
   }
 
   // 未指定排序时探测主键，按主键降序返回（最新数据优先）；结果带 TTL 缓存
-  async defaultOrderBy(dbName, table) {
+  async _pkInfo(dbName, table) {
     const cacheKey = `${dbName}.${table}`;
     const hit = this._pkCache.get(cacheKey);
     if (hit && Date.now() - hit.at < PK_CACHE_TTL_MS) {
-      return hit.value;
+      return hit;
     }
 
     // MariaDB 把 information_schema 列名返回为大写；统一用别名归一化
@@ -92,21 +92,33 @@ export class MysqlDriver {
        ORDER BY kcu.ORDINAL_POSITION`,
       [dbName, table],
     );
-    const cols = (rows || []).map((r) => quoteIdentMysql(r.column_name));
+    const rawCols = (rows || []).map((r) => String(r.column_name));
+    const cols = rawCols.map(quoteIdentMysql);
     const value = cols.length ? ` ${cols.map((c) => `${c} DESC`).join(", ")}` : "";
-    this._pkCache.set(cacheKey, { value, at: Date.now() });
-    return value;
+    const info = { value, cols, rawCols, at: Date.now() };
+    this._pkCache.set(cacheKey, info);
+    return info;
   }
 
-  async query(dbName, table, { where = "", orderBy = "", limit = 20 } = {}) {
+  async defaultOrderBy(dbName, table) {
+    return (await this._pkInfo(dbName, table)).value;
+  }
+
+  /** 主键列名（已加引号）；无主键返回空数组 */
+  async pkColumns(dbName, table) {
+    return (await this._pkInfo(dbName, table)).cols;
+  }
+
+  async query(dbName, table, { where = "", orderBy = "", limit = 20, offset = 0 } = {}) {
     const w = validateWhere(where);
     const ob = validateOrderBy(orderBy) || (await this.defaultOrderBy(dbName, table));
     const lim = parseLimit(limit);
+    const off = Math.max(0, Math.floor(Number(offset) || 0));
 
     const tableIdent = `${quoteIdentMysql(dbName)}.${quoteIdentMysql(table)}`;
     const sql = `SELECT * FROM ${tableIdent}${w ? ` WHERE ${w}` : ""}${
       ob ? ` ORDER BY ${ob}` : ""
-    } LIMIT ${lim}`;
+    } LIMIT ${lim}${off > 0 ? ` OFFSET ${off}` : ""}`;
 
     const [rows] = await this.pool.query(sql);
     return { docs: rows.map(normalizeRow), sql };

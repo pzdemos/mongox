@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- SqlX favicon: 翡翠绿底三段数据库堆叠(米纸盘顶/雾蓝/琥珀), 呼应品牌色板 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a9d6e"/>
+      <stop offset="1" stop-color="#0e6b4b"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <ellipse cx="32" cy="20" rx="17" ry="7" fill="#f8f5ee"/>
+  <rect x="15" y="29" width="34" height="9" rx="4.5" fill="#7fb8e6"/>
+  <rect x="15" y="41" width="34" height="9" rx="4.5" fill="#ffd166"/>
+</svg>
