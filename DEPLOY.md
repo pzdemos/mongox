@@ -143,3 +143,13 @@ export SQLX_DIR=/absolute/path/to/SqlX
 ```bash
 npm install
 ```
+
+## AI 账号体系（2026-10 起附加）
+
+- 数据：SQLite `data/accounts.db`（users/sessions/ai_usage 三表，WAL），随 `data/` gitignore，**记得纳入服务器备份**
+- 环境变量：`EMAIL_HOST/EMAIL_PORT/EMAIL_USER/EMAIL_PASS`（QQ SMTP，注册验证码）；`REGISTER_BONUS_QUOTA`（默认 1000）、`ADMIN_QUOTA`（默认 10000）可选
+- ⚠️ 修改 ecosystem.config.cjs 的 env 后 `pm2 reload` **不会重读配置**——用
+  `pm2 restart mongox --update-env`（shell 里带上新变量）或 delete+start
+- 管理员/运维：`node src/admin-cli.js create|list|set-quota|usage`
+- 验证码防刷：单 IP 每小时 5 次 + 同邮箱 60s 冷却 + 单码 5 次校验上限（内存态，重启清零）
+- AI 门控：`/ai/run`、`/ai/run/stream` 需登录+扣额度（失败自动退还）；其余功能保持公开
