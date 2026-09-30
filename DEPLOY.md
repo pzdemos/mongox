@@ -153,3 +153,10 @@ npm install
 - 管理员/运维：`node src/admin-cli.js create|list|set-quota|usage`
 - 验证码防刷：单 IP 每小时 5 次 + 同邮箱 60s 冷却 + 单码 5 次校验上限（内存态，重启清零）
 - AI 门控：`/ai/run`、`/ai/run/stream` 需登录+扣额度（失败自动退还）；其余功能保持公开
+
+## 连接按用户归属（2026-10 起附加）
+
+- 登录用户：连接存入固定桶 `user-<id>`，跨设备共享；首次请求自动把浏览器匿名桶连接按 `type+uri` 去重合并进账号（合并是复制语义，匿名桶保留至 TTL 自然过期）
+- 未登录访客：仍是匿名 cookie 桶，30 天 TTL 清理；`user-*` 桶豁免 TTL
+- 存量迁移：`node src/admin-cli.js buckets` 定位 → `adopt <clientId> <email>` → **必须 `pm2 restart mongox`**（gracefulShutdown 不落盘，restart 不会覆盖 adopt 结果；restart 后服务器重读磁盘）
+- ⚠️ 运维脚本读磁盘、服务器读内存：adopt 后务必 restart；脚本内遍历 `persistentStore` 必须用命名空间访问（`store.persistentStore`），ESM 解构会拿到 loadStore 前的快照
