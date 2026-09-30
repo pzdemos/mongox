@@ -140,6 +140,44 @@ export function removeConnection(bucket, connectionId) {
 }
 
 /**
+ * 把 from 桶的连接合并进 to 桶（按 type+uri 去重，幂等）。
+ * 用于登录态接管：把访客浏览器匿名 clientId 下的连接归入登录账号的固定桶（user-<id>）。
+ * 只读探测：from 不存在/无连接时直接返回，不创建空桶。返回 { added, skipped }。
+ */
+export function mergeClientConnections(fromClientId, toClientId) {
+  const source = persistentStore.clients[fromClientId];
+  const items = (source?.connections || []).filter(Boolean);
+  if (items.length === 0) return { added: 0, skipped: 0 };
+  const target = getClientBucket(toClientId);
+  const seen = new Set(target.connections.map((c) => `${c.type}::${c.uri}`));
+  let added = 0;
+  let skipped = 0;
+  for (const record of items) {
+    const key = `${record.type}::${record.uri}`;
+    if (seen.has(key)) {
+      skipped += 1;
+      continue;
+    }
+    seen.add(key);
+    const nameBase = record.name || `${record.type} @ ${record.uri.replace(/\/\/[^@/]*@/, "//")}`;
+    let name = nameBase;
+    let suffix = 2;
+    while (target.connections.some((c) => c.name === name)) {
+      name = `${nameBase} (${suffix})`;
+      suffix += 1;
+    }
+    target.connections.push(
+      normalizeConnectionRecord({ ...record, id: undefined, name, lastUsedAt: record.lastUsedAt }),
+    );
+    added += 1;
+  }
+  if (added > 0) {
+    target.lastActiveAt = nowIso();
+  }
+  return { added, skipped };
+}
+
+/**
  * 清理长期不活跃的 client bucket，防止 connections.json 无限增长。
  * 每个访问者（cookie）都会生成一个 bucket；无 TTL 时文件会随访客数无限膨胀。
  * TTL 默认 30 天，可用 CLIENT_TTL_DAYS 环境变量调整（最小 1 天）。
@@ -150,6 +188,8 @@ export function cleanupStaleClients({ isActiveClientId = () => false } = {}) {
   let removed = 0;
   for (const [clientId, bucket] of Object.entries(persistentStore.clients)) {
     if (isActiveClientId(clientId)) continue;
+    // 登录账号的固定桶（user-<id>）是持久资产，不参与 TTL 清理
+    if (clientId.startsWith("user-")) continue;
     const stamps = [
       bucket.lastActiveAt,
       ...(bucket.connections || []).map((c) => c.lastUsedAt || c.updatedAt || c.createdAt),

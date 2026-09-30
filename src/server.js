@@ -16,6 +16,7 @@ import {
   inferConnectionName,
   listConnections,
   loadStore,
+  mergeClientConnections,
   normalizeConnectionRecord,
   nowIso,
   persistStore,
@@ -45,6 +46,7 @@ import {
   aiGate,
   commitAiCall,
   abortAiCall,
+  resolveAuthUser,
 } from "./accounts.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -224,7 +226,17 @@ app.use((req, res, next) => {
     clientId = crypto.randomUUID();
     res.setHeader("Set-Cookie", serializeCookie(COOKIE_NAME, clientId, COOKIE_MAX_AGE));
   }
-  req.clientId = clientId;
+  // 登录用户：连接归入账号固定桶 user-<id>（跨设备共享）；
+  // 首次请求时把本浏览器匿名桶的连接去重合并进账号桶。未登录访客维持匿名桶。
+  const authUser = resolveAuthUser(req);
+  if (authUser) {
+    const userKey = `user-${authUser.id}`;
+    const { added } = mergeClientConnections(clientId, userKey);
+    if (added > 0) void persistStore();
+    req.clientId = userKey;
+  } else {
+    req.clientId = clientId;
+  }
   next();
 });
 
