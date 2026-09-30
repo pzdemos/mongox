@@ -40,6 +40,12 @@ import {
 } from "./ai/pipeline.js";
 import { normalizeMongoShellJsonish } from "./ai/shellNormalize.js";
 import { aiAuditContext, appendAiAudit } from "./ai/auditLog.js";
+import {
+  accountsRouter,
+  aiGate,
+  commitAiCall,
+  abortAiCall,
+} from "./accounts.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,7 +77,14 @@ const connectLimiter = createRateLimiter({
   windowMs: 60_000,
   max: Number(process.env.RATE_LIMIT_CONNECT_PER_MIN || 30),
 });
-const STRICT_LIMIT_PATHS = new Set(["/connect", "/connections", "/login"]);
+const STRICT_LIMIT_PATHS = new Set([
+  "/connect",
+  "/connections",
+  "/login",
+  "/auth/send-code",
+  "/auth/register",
+  "/auth/login",
+]);
 app.use(API_PREFIX, globalLimiter);
 app.use(API_PREFIX, (req, res, next) => {
   if (STRICT_LIMIT_PATHS.has(req.path)) {
@@ -79,6 +92,8 @@ app.use(API_PREFIX, (req, res, next) => {
   }
   next();
 });
+// 账号体系：注册/登录/额度（仅 AI 端点要求登录，其余工具功能保持公开）
+app.use(API_PREFIX, accountsRouter);
 
 app.use(requireAuth);
 app.get("/login", (_req, res) => {
@@ -1739,9 +1754,13 @@ async function explainAiStatement({ runtime, connection, statement, isSql }) {
 
 app.post(
   apiPath("/ai/run"),
+  aiGate,
   asyncHandler(async (req, res) => {
     if (!isDeepseekConfigured()) {
-      return fail(res, 503, "AI_NOT_CONFIGURED", "未配置 DEEPSEEK_API_KEY，无法使用 AI 模式");
+      throw Object.assign(new Error("未配置 DEEPSEEK_API_KEY，无法使用 AI 模式"), {
+        statusCode: 503,
+        code: "AI_NOT_CONFIGURED",
+      });
     }
 
     const { bucket, connection, runtime } = await requireReadyContext(req, {
@@ -1751,7 +1770,10 @@ app.post(
 
     const prompt = String(req.body?.prompt || "").trim();
     if (!prompt) {
-      return fail(res, 400, "INVALID_INPUT", "请输入自然语言描述");
+      throw Object.assign(new Error("请输入自然语言描述"), {
+        statusCode: 400,
+        code: "INVALID_INPUT",
+      });
     }
     const history = sanitizeAiHistory(req.body?.history);
 
@@ -1765,6 +1787,14 @@ app.post(
     if (!statement) {
       return fail(res, 502, "AI_PARSE", "无法从模型输出解析语句");
     }
+    commitAiCall(req, {
+      endpoint: "/ai/run",
+      engine: driverType,
+      database: connection.dbName,
+      collection: connection.collectionName,
+      prompt,
+      statement,
+    });
 
     let kind;
     try {
@@ -1864,9 +1894,13 @@ app.post(
 
 app.post(
   apiPath("/ai/run/stream"),
+  aiGate,
   asyncHandler(async (req, res) => {
     if (!isDeepseekConfigured()) {
-      return fail(res, 503, "AI_NOT_CONFIGURED", "未配置 DEEPSEEK_API_KEY，无法使用 AI 模式");
+      throw Object.assign(new Error("未配置 DEEPSEEK_API_KEY，无法使用 AI 模式"), {
+        statusCode: 503,
+        code: "AI_NOT_CONFIGURED",
+      });
     }
 
     const { bucket, connection, runtime } = await requireReadyContext(req, {
@@ -1876,7 +1910,10 @@ app.post(
 
     const prompt = String(req.body?.prompt || "").trim();
     if (!prompt) {
-      return fail(res, 400, "INVALID_INPUT", "请输入自然语言描述");
+      throw Object.assign(new Error("请输入自然语言描述"), {
+        statusCode: 400,
+        code: "INVALID_INPUT",
+      });
     }
     const history = sanitizeAiHistory(req.body?.history);
 
@@ -1910,6 +1947,14 @@ app.post(
           code: "AI_PARSE",
         });
       }
+      commitAiCall(req, {
+        endpoint: "/ai/run/stream",
+        engine: driverType,
+        database: connection.dbName,
+        collection: connection.collectionName,
+        prompt,
+        statement,
+      });
 
       let kind;
       try {
@@ -2009,6 +2054,7 @@ app.post(
         },
       });
     } catch (error) {
+      abortAiCall(req, error); // 退还预扣额度并落失败记录
       send({
         type: "error",
         error: normalizeErrorMessage(error),
@@ -2738,7 +2784,8 @@ app.post(
   }),
 );
 
-app.use((error, _req, res, _next) => {
+app.use((error, req, res, _next) => {
+  abortAiCall(req, error); // AI 预扣额度退还 + 失败留痕（幂等，非 AI 请求为空操作）
   const statusCode = error.statusCode || classifyErrorStatusCode(error);
   const body = {
     ok: false,
