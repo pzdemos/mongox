@@ -299,7 +299,10 @@ function recordUsage(req, { endpoint, engine, database, collection, prompt, stat
 
 // ---------- 认证路由 ----------
 
-const sendCodeLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5 }); // 单 IP 每小时 5 次
+const sendCodeLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_CODE_PER_HOUR || 5), // 单 IP 每小时发码上限
+});
 
 export const accountsRouter = Router();
 
