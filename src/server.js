@@ -937,6 +937,8 @@ async function streamExportAll({ req, res, runtime, connection, format }) {
     onBatch: async (docs) => {
       if (format === "csv") {
         if (!csvHeader) {
+          // UTF-8 BOM: 让 Excel 正确识别中文
+          res.write("\ufeff");
           csvHeader = [...new Set(docs.flatMap((d) => Object.keys(d)))].slice(0, 200);
           res.write(`${csvHeader.join(",")}\n`);
         }
@@ -2713,7 +2715,7 @@ app.post(
       );
     } else if (format === "csv") {
       mimeType = "text/csv; charset=utf-8";
-      content = toCsv(docs);
+      content = "\ufeff" + toCsv(docs);
     } else if (format === "ndjson") {
       mimeType = "application/x-ndjson; charset=utf-8";
       content = docs
