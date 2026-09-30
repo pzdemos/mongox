@@ -8,8 +8,15 @@ import fs from "node:fs";
 import { Router } from "express";
 import nodemailer from "nodemailer";
 import Database from "better-sqlite3";
-import { createRateLimiter } from "./security.js";
-import { DATA_DIR } from "./store.js";
+import {
+  createRateLimiter,
+} from "./security.js";
+import {
+  DATA_DIR,
+  mergeClientConnections,
+  persistStore,
+  persistentStore,
+} from "./store.js";
 
 const DB_FILE = process.env.ACCOUNTS_DB || path.join(DATA_DIR, "accounts.db");
 const REGISTER_BONUS_QUOTA = Math.max(0, Number(process.env.REGISTER_BONUS_QUOTA || 1000));
@@ -57,6 +64,13 @@ db.exec(`
   );
 `);
 
+// 存量库迁移：users 表补 disabled 列（已存在时报错吞掉）
+try {
+  db.exec("ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0");
+} catch {
+  /* 列已存在 */
+}
+
 // ---------- 密码（scrypt）与会话 ----------
 
 function hashPassword(password) {
@@ -102,7 +116,7 @@ function parseCookies(header = "") {
   return out;
 }
 
-/** 从请求 Cookie 解析登录用户；未登录返回 null */
+/** 从请求 Cookie 解析登录用户；未登录/已禁用返回 null */
 export function resolveAuthUser(req) {
   const token = parseCookies(req.headers.cookie || "")[AUTH_COOKIE];
   if (!token) return null;
@@ -110,10 +124,20 @@ export function resolveAuthUser(req) {
     .prepare(
       `SELECT u.id, u.email, u.role, u.quota, u.used FROM sessions s
        JOIN users u ON u.id = s.user_id
-       WHERE s.token_hash = ? AND s.expires_at > ?`
+       WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0`
     )
     .get(sha256(token), Date.now());
   return row || null;
+}
+
+// ---------- 管理员面板 API（仅 role=admin） ----------
+
+export function requireAdmin(req, res, next) {
+  const user = resolveAuthUser(req);
+  if (!user || user.role !== "admin") {
+    return res.status(403).json({ ok: false, code: "FORBIDDEN", error: "需要管理员权限" });
+  }
+  next();
 }
 
 // ---------- 邮箱验证码（内存态，短命数据无需入库） ----------
@@ -280,7 +304,13 @@ const sendCodeLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 5 });
 export const accountsRouter = Router();
 
 function publicUser(row) {
-  return { email: row.email, role: row.role, quota: row.quota, used: row.used };
+  return {
+    email: row.email,
+    role: row.role,
+    quota: row.quota,
+    used: row.used,
+    disabled: Boolean(row.disabled),
+  };
 }
 
 accountsRouter.post("/auth/send-code", sendCodeLimiter, async (req, res) => {
@@ -388,6 +418,9 @@ accountsRouter.post("/auth/login", (req, res) => {
   if (!user || !verifyPassword(password, user.pwd_hash)) {
     return res.status(401).json({ ok: false, code: "INVALID_CREDENTIALS", error: "邮箱或密码不正确" });
   }
+  if (user.disabled) {
+    return res.status(403).json({ ok: false, code: "USER_DISABLED", error: "该账号已被禁用，请联系管理员" });
+  }
   createSession(res, user.id);
   return res.json({ ok: true, user: publicUser(user) });
 });
@@ -439,3 +472,124 @@ export function listUsage(limit = 20) {
     )
     .all(limit);
 }
+
+// ---------- 管理员面板 API 路由 ----------
+function adminOverview() {
+  const userStats = db
+    .prepare(
+      "SELECT COUNT(*) AS users, COALESCE(SUM(quota),0) AS quotaLeft, COALESCE(SUM(used),0) AS totalUsed, COALESCE(SUM(disabled),0) AS disabled FROM users"
+    )
+    .get();
+  const todayPrefix = new Date().toISOString().slice(0, 10);
+  const today = db
+    .prepare("SELECT COUNT(*) AS calls FROM ai_usage WHERE ok = 1 AND created_at >= ?")
+    .get(todayPrefix);
+  const buckets = Object.entries(persistentStore.clients);
+  const totalConnections = buckets.reduce((sum, [, b]) => sum + (b.connections?.length || 0), 0);
+  return {
+    users: userStats.users,
+    disabledUsers: userStats.disabled,
+    quotaLeft: userStats.quotaLeft,
+    totalUsed: userStats.totalUsed,
+    todayAiCalls: today.calls,
+    buckets: buckets.length,
+    totalConnections,
+  };
+}
+
+accountsRouter.get("/admin/overview", requireAdmin, (_req, res) => {
+  res.json({ ok: true, overview: adminOverview() });
+});
+
+accountsRouter.get("/admin/users", requireAdmin, (_req, res) => {
+  res.json({
+    ok: true,
+    users: db
+      .prepare(
+        "SELECT id, email, role, quota, used, disabled, created_at FROM users ORDER BY id"
+      )
+      .all()
+      .map((u) => ({ ...u, disabled: Boolean(u.disabled) })),
+  });
+});
+
+accountsRouter.post("/admin/users/quota", requireAdmin, (req, res) => {
+  const email = normalizeEmail(req.body?.email);
+  const add = req.body?.add;
+  const set = req.body?.set;
+  const user = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+  if (!user) {
+    return res.status(404).json({ ok: false, code: "NOT_FOUND", error: "用户不存在" });
+  }
+  if (Number.isFinite(Number(set))) {
+    db.prepare("UPDATE users SET quota = MAX(0, ?) WHERE id = ?").run(Math.floor(Number(set)), user.id);
+  } else if (Number.isFinite(Number(add)) && Number(add) !== 0) {
+    db.prepare("UPDATE users SET quota = MAX(0, quota + ?) WHERE id = ?").run(
+      Math.floor(Number(add)),
+      user.id
+    );
+  } else {
+    return res.status(400).json({ ok: false, code: "INVALID_INPUT", error: "请提供 add 或 set 数值" });
+  }
+  const after = db.prepare("SELECT quota FROM users WHERE id = ?").get(user.id);
+  return res.json({ ok: true, email, quota: after.quota });
+});
+
+accountsRouter.post("/admin/users/toggle", requireAdmin, (req, res) => {
+  const email = normalizeEmail(req.body?.email);
+  const user = db.prepare("SELECT id, disabled FROM users WHERE email = ?").get(email);
+  if (!user) {
+    return res.status(404).json({ ok: false, code: "NOT_FOUND", error: "用户不存在" });
+  }
+  if (user.id === 1) {
+    return res.status(400).json({ ok: false, code: "INVALID_INPUT", error: "不能禁用初始管理员账号" });
+  }
+  const next = user.disabled ? 0 : 1;
+  db.prepare("UPDATE users SET disabled = ? WHERE id = ?").run(next, user.id);
+  if (next) {
+    // 禁用即时生效：吊销全部会话
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(user.id);
+  }
+  return res.json({ ok: true, email, disabled: Boolean(next) });
+});
+
+accountsRouter.get("/admin/usage", requireAdmin, (req, res) => {
+  const limit = Math.min(500, Math.max(1, Number(req.query?.limit) || 100));
+  res.json({ ok: true, usage: listUsage(limit) });
+});
+
+accountsRouter.get("/admin/buckets", requireAdmin, (_req, res) => {
+  const emailById = new Map(
+    db.prepare("SELECT id, email FROM users").all().map((u) => [`user-${u.id}`, u.email])
+  );
+  const buckets = Object.entries(persistentStore.clients)
+    .map(([clientId, bucket]) => ({
+      clientId,
+      owner: emailById.get(clientId) || null,
+      isUserBucket: clientId.startsWith("user-"),
+      connections: bucket.connections?.length || 0,
+      detail: (bucket.connections || [])
+        .map((c) => `${c.name || c.type}(${c.type})`)
+        .join(" | ")
+        .slice(0, 100),
+      lastActiveAt: bucket.lastActiveAt,
+    }))
+    .sort((a, b) => b.connections - a.connections || b.lastActiveAt.localeCompare(a.lastActiveAt));
+  res.json({ ok: true, buckets });
+});
+
+accountsRouter.post("/admin/buckets/adopt", requireAdmin, (req, res) => {
+  const fromId = String(req.body?.clientId || "").trim();
+  const email = normalizeEmail(req.body?.email);
+  const user = db.prepare("SELECT id, email FROM users WHERE email = ?").get(email);
+  if (!user) {
+    return res.status(404).json({ ok: false, code: "NOT_FOUND", error: "目标用户不存在" });
+  }
+  const source = persistentStore.clients[fromId];
+  if (!source?.connections?.length) {
+    return res.status(404).json({ ok: false, code: "NOT_FOUND", error: "源桶不存在或没有连接" });
+  }
+  const { added, skipped } = mergeClientConnections(fromId, `user-${user.id}`);
+  if (added > 0) void persistStore(); // 进程内内存+磁盘同步生效，无需重启
+  return res.json({ ok: true, added, skipped, owner: user.email });
+});
